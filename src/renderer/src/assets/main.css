@@ -6,13 +6,13 @@
   --statusbar-height: 30px;
   --border-color: rgba(255, 255, 255, 0.06);
   --border-color-hover: rgba(255, 255, 255, 0.12);
-  
+
   --bg-primary: #0a0b0d;
   --bg-toolbar: #13141b;
   --bg-tabs: #0e0f14;
   --bg-sidebar: #13141b;
   --bg-viewport: #181920;
-  
+
   --accent-blue: #3b82f6;
   --accent-blue-hover: #60a5fa;
 }
@@ -63,6 +63,17 @@ body {
 .toolbar-left {
   display: flex;
   align-items: center;
+}
+
+.language-select {
+  min-width: 110px;
+  padding: 5px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: #1f2029;
+  color: #f8fafc;
+  font-size: 13px;
+  cursor: pointer;
 }
 
 .menu-btn {
@@ -205,13 +216,17 @@ body {
   height: 100%;
   overflow: auto;
   background-color: var(--bg-viewport);
-  background-image: 
+  background-image:
     linear-gradient(45deg, #111217 25%, transparent 25%),
     linear-gradient(-45deg, #111217 25%, transparent 25%),
     linear-gradient(45deg, transparent 75%, #111217 75%),
     linear-gradient(-45deg, transparent 75%, #111217 75%);
   background-size: 20px 20px;
-  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+  background-position:
+    0 0,
+    0 10px,
+    10px -10px,
+    -10px 0px;
   position: relative;
   display: block;
 }
@@ -650,7 +665,8 @@ body {
   max-width: 100%;
 }
 
-.filesize-display, .resolution-display {
+.filesize-display,
+.resolution-display {
   color: #cbd5e1; /* brighter color */
   font-weight: 600;
 }
@@ -692,7 +708,9 @@ body {
   text-align: left;
   cursor: pointer;
   width: 100%;
-  transition: background 0.15s, color 0.15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
 }
 
 .context-menu-item:hover {
@@ -756,6 +774,28 @@ body {
 
 .rename-modal-body {
   display: flex;
+}
+
+.settings-modal {
+  width: 400px;
+}
+
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.settings-label {
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-help {
+  margin: 0;
+  color: #64748b;
+  font-size: 11px;
 }
 
 .rename-modal-input {

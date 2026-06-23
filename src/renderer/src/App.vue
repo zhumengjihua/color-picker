@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
+import { useI18n } from 'vue-i18n'
+import { locales, setLocale, type AppLocale } from './i18n'
 
 interface ImageTab {
   id: string
@@ -17,41 +19,19 @@ const tabs = ref<ImageTab[]>([])
 const activeTabId = ref<string | null>(null)
 const colorFormat = ref<'hex' | 'rgb'>('hex')
 
-// i18n
-const isZh = navigator.language.startsWith('zh')
-const t = {
-  openImage: isZh ? '打开图片' : 'Open Image',
-  adbScreen: isZh ? 'ADB 截图' : 'ADB Screen',
-  capturing: isZh ? '截图中...' : 'Capturing...',
-  dragHint: isZh ? '拖拽图片到这里，或点击选择图片' : 'Drag images here, or click to select',
-  dragSub: isZh ? '支持多张图片同时打开，支持 Ctrl + V 直接粘贴图片' : 'Supports multiple images and Ctrl + V pasting',
-  imgProps: isZh ? '图片属性' : 'Image Properties',
-  resolution: isZh ? '分辨率' : 'Resolution',
-  picker: isZh ? '取色器' : 'Color Picker',
-  coords: isZh ? '坐标' : 'Coordinates',
-  recordsList: isZh ? '记录列表' : 'Records List',
-  clearAll: isZh ? '清空全部' : 'Clear All',
-  closeCurrent: isZh ? '关闭当前 (X)' : 'Close Current (X)',
-  closeOthers: isZh ? '关闭其他 (O)' : 'Close Others (O)',
-  closeAll: isZh ? '关闭所有 (A)' : 'Close All (A)',
-  rename: isZh ? '重命名 (R)' : 'Rename (R)',
-  copyImage: isZh ? '复制 (C)' : 'Copy (C)',
-  renameTitle: isZh ? '重命名图片' : 'Rename Image',
-  renameSub: isZh ? '请输入新的图片名称。如果是剪贴板复制没有路径的图片，点击确定后需选择保存路径。' : 'Enter new image name. For clipboard images without paths, you must select a save path after confirming.',
-  inputNewName: isZh ? '请输入新名称...' : 'Enter new name...',
-  cancel: isZh ? '取消' : 'Cancel',
-  confirm: isZh ? '确定' : 'Confirm',
-  toggleFormat: isZh ? '点击切换颜色格式' : 'Click to toggle color format',
-  current: isZh ? '当前' : 'Current',
-  clearRecord: isZh ? '清空此条记录' : 'Clear this record',
-  failedRename: isZh ? '重命名文件失败: ' : 'Failed to rename file: ',
-  unknownErr: isZh ? '未知错误' : 'Unknown error',
-  operationFailed: isZh ? '操作失败: ' : 'Operation failed: ',
-  failedSave: isZh ? '保存图片文件失败: ' : 'Failed to save image file: ',
-  failedAdb: isZh ? 'ADB 截图失败: ' : 'ADB capture failed: ',
-  adbEnsure: isZh ? '请确保手机已连接并授权 USB 调试' : 'Please ensure phone is connected and USB debugging is authorized',
-  onlyClient: isZh ? '该功能仅在客户端下可用' : 'This feature is only available in the desktop client'
-}
+const { t, locale } = useI18n()
+const selectedLocale = computed({
+  get: () => locale.value,
+  set: (value: string) => {
+    if (locales.some(({ code }) => code === value)) {
+      setLocale(value as AppLocale)
+      void window.electron?.ipcRenderer.invoke('set-app-locale', value)
+    }
+  }
+})
+const settingsVisible = ref(false)
+let removeSettingsListener: (() => void) | undefined
+let removeMenuActionListener: (() => void) | undefined
 
 // Mouse state
 const mouseX = ref<number | null>(null)
@@ -73,16 +53,16 @@ const updateLoupe = (x: number, y: number, tab: ImageTab) => {
   if (!loupeCanvasRef.value || !tab.canvas) return
   const loupeCtx = loupeCanvasRef.value.getContext('2d')
   if (!loupeCtx) return
-  
+
   const size = 11
   const half = Math.floor(size / 2)
   const sx = x - half
   const sy = y - half
-  
+
   loupeCtx.clearRect(0, 0, 110, 110)
   loupeCtx.imageSmoothingEnabled = false
   loupeCtx.drawImage(tab.canvas, sx, sy, size, size, 0, 0, 110, 110)
-  
+
   loupeCtx.lineWidth = 1
   loupeCtx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
   for (let i = 0; i <= size; i++) {
@@ -90,7 +70,7 @@ const updateLoupe = (x: number, y: number, tab: ImageTab) => {
     loupeCtx.moveTo(i * 10, 0)
     loupeCtx.lineTo(i * 10, 110)
     loupeCtx.stroke()
-    
+
     loupeCtx.beginPath()
     loupeCtx.moveTo(0, i * 10)
     loupeCtx.lineTo(110, i * 10)
@@ -138,10 +118,10 @@ const records = ref<RecordSlot[]>(
   }))
 )
 
-const filledCount = computed(() => records.value.filter(r => r.x !== null).length)
+const filledCount = computed(() => records.value.filter((r) => r.x !== null).length)
 
 const addRecord = (x: number, y: number, hex: string, rgba: string) => {
-  const emptySlot = records.value.find(r => r.x === null)
+  const emptySlot = records.value.find((r) => r.x === null)
   if (emptySlot) {
     emptySlot.x = x
     emptySlot.y = y
@@ -151,7 +131,7 @@ const addRecord = (x: number, y: number, hex: string, rgba: string) => {
 }
 
 const clearSlot = (index: number) => {
-  const slot = records.value.find(r => r.index === index)
+  const slot = records.value.find((r) => r.index === index)
   if (slot) {
     slot.x = null
     slot.y = null
@@ -161,7 +141,7 @@ const clearSlot = (index: number) => {
 }
 
 const clearAllRecords = () => {
-  records.value.forEach(slot => {
+  records.value.forEach((slot) => {
     slot.x = null
     slot.y = null
     slot.hex = null
@@ -170,7 +150,7 @@ const clearAllRecords = () => {
 }
 
 const activeTab = computed(() => {
-  return tabs.value.find(tab => tab.id === activeTabId.value) || null
+  return tabs.value.find((tab) => tab.id === activeTabId.value) || null
 })
 
 const formatSize = (bytes: number): string => {
@@ -194,7 +174,7 @@ const addImages = (files: File[] | FileList) => {
 
     const id = Math.random().toString(36).substring(2, 9)
     const url = URL.createObjectURL(file)
-    
+
     const img = new Image()
     img.src = url
     img.onload = () => {
@@ -206,9 +186,10 @@ const addImages = (files: File[] | FileList) => {
         ctx.drawImage(img, 0, 0)
       }
 
-      const name = file.name && file.name !== 'image.png' 
-        ? file.name 
-        : `Pasted Image (${new Date().toLocaleTimeString()})`
+      const name =
+        file.name && file.name !== 'image.png'
+          ? file.name
+          : `Pasted Image (${new Date().toLocaleTimeString()})`
 
       const newTab: ImageTab = {
         id,
@@ -238,7 +219,7 @@ interface NativeImageFile {
 const addNativeImages = (files: NativeImageFile[]) => {
   files.forEach((file) => {
     const id = Math.random().toString(36).substring(2, 9)
-    
+
     const img = new Image()
     img.src = file.dataUrl
     img.onload = () => {
@@ -291,26 +272,28 @@ const isCapturingAdb = ref(false)
 const triggerAdbCapture = async () => {
   if (isCapturingAdb.value) return
   isCapturingAdb.value = true
-  
+
   if (window.electron && window.electron.ipcRenderer) {
     try {
       const result = await window.electron.ipcRenderer.invoke('capture-adb-screen')
       if (result && result.success) {
-        addNativeImages([{
-          path: result.path || ('adb-screenshot-' + Date.now() + '.png'),
-          name: result.name || ((isZh ? '手机截图 ' : 'Screenshot ') + new Date().toLocaleTimeString()),
-          size: result.size,
-          dataUrl: result.dataUrl
-        }])
+        addNativeImages([
+          {
+            path: result.path || 'adb-screenshot-' + Date.now() + '.png',
+            name: result.name || t('app.screenshotName', { time: new Date().toLocaleTimeString() }),
+            size: result.size,
+            dataUrl: result.dataUrl
+          }
+        ])
       } else {
-        alert(t.failedAdb + (result?.error || t.adbEnsure))
+        alert(t('app.failedAdb') + (result?.error || t('app.adbEnsure')))
       }
     } catch (err: any) {
       console.error('Failed to capture adb screen:', err)
-      alert(t.operationFailed + err.message)
+      alert(t('app.operationFailed') + err.message)
     }
   } else {
-    alert(t.onlyClient)
+    alert(t('app.onlyClient'))
   }
   isCapturingAdb.value = false
 }
@@ -358,11 +341,11 @@ const handleMouseMove = (event: MouseEvent) => {
 
   const imgElement = event.target as HTMLImageElement
   const rect = imgElement.getBoundingClientRect()
-  
+
   // Calculate relative coordinate based on image rendering natural dimensions
   const scaleX = tab.width / rect.width
   const scaleY = tab.height / rect.height
-  
+
   const x = Math.floor((event.clientX - rect.left) * scaleX)
   const y = Math.floor((event.clientY - rect.top) * scaleY)
   cursorX.value = event.clientX - rect.left
@@ -376,11 +359,15 @@ const handleMouseMove = (event: MouseEvent) => {
     Math.abs(x - lastWarpX.value) <= 1 &&
     Math.abs(y - lastWarpY.value) <= 1
   ) {
-    logToMain(`handleMouseMove GUARDED: x=${x}, y=${y}, targetX=${lastWarpX.value}, targetY=${lastWarpY.value}`)
+    logToMain(
+      `handleMouseMove GUARDED: x=${x}, y=${y}, targetX=${lastWarpX.value}, targetY=${lastWarpY.value}`
+    )
     return
   }
 
-  logToMain(`handleMouseMove: clientX=${event.clientX}, clientY=${event.clientY}, rectLeft=${rect.left}, rectTop=${rect.top}, x=${x}, y=${y}`)
+  logToMain(
+    `handleMouseMove: clientX=${event.clientX}, clientY=${event.clientY}, rectLeft=${rect.left}, rectTop=${rect.top}, x=${x}, y=${y}`
+  )
 
   // Bounds check
   if (x >= 0 && x < tab.width && y >= 0 && y < tab.height) {
@@ -390,17 +377,17 @@ const handleMouseMove = (event: MouseEvent) => {
       const g = pixel[1]
       const b = pixel[2]
       const a = pixel[3]
-      
+
       const alphaVal = parseFloat((a / 255).toFixed(3))
-      
-      const hex = '#' + [r, g, b, a].map(v => v.toString(16).padStart(2, '0')).join('')
+
+      const hex = '#' + [r, g, b, a].map((v) => v.toString(16).padStart(2, '0')).join('')
       const rgba = `rgba(${r}, ${g}, ${b}, ${alphaVal})`
-      
+
       mouseX.value = x
       mouseY.value = y
       mouseColorHex.value = hex
       mouseColorRgba.value = rgba
-      
+
       updateLoupe(x, y, tab)
     } catch (err) {
       console.error(err)
@@ -434,7 +421,7 @@ const handleWindowFocus = async () => {
           // Calculate image relative pixel coordinates
           const scaleX = tab.width / rect.width
           const scaleY = tab.height / rect.height
-          
+
           const x = Math.floor((pos.x - rect.left) * scaleX)
           const y = Math.floor((pos.y - rect.top) * scaleY)
 
@@ -446,10 +433,10 @@ const handleWindowFocus = async () => {
             const b = pixel[2]
             const a = pixel[3]
             const alphaVal = parseFloat((a / 255).toFixed(3))
-            
-            const hex = '#' + [r, g, b, a].map(v => v.toString(16).padStart(2, '0')).join('')
+
+            const hex = '#' + [r, g, b, a].map((v) => v.toString(16).padStart(2, '0')).join('')
             const rgba = `rgba(${r}, ${g}, ${b}, ${alphaVal})`
-            
+
             mouseX.value = x
             mouseY.value = y
             mouseColorHex.value = hex
@@ -513,19 +500,19 @@ const closeOtherTabs = () => {
   if (contextMenuTabId.value) {
     const keepId = contextMenuTabId.value
     // Revoke URL for other tabs
-    tabs.value.forEach(tab => {
+    tabs.value.forEach((tab) => {
       if (tab.id !== keepId) {
         URL.revokeObjectURL(tab.url)
       }
     })
-    tabs.value = tabs.value.filter(tab => tab.id === keepId)
+    tabs.value = tabs.value.filter((tab) => tab.id === keepId)
     activeTabId.value = keepId
   }
   contextMenuVisible.value = false
 }
 
 const closeAllTabs = () => {
-  tabs.value.forEach(tab => {
+  tabs.value.forEach((tab) => {
     URL.revokeObjectURL(tab.url)
   })
   tabs.value = []
@@ -535,21 +522,21 @@ const closeAllTabs = () => {
 
 const copyImage = async () => {
   if (!contextMenuTabId.value) return
-  const tab = tabs.value.find(t => t.id === contextMenuTabId.value)
+  const tab = tabs.value.find((t) => t.id === contextMenuTabId.value)
   if (!tab || !tab.canvas) return
-  
+
   if (window.electron && window.electron.ipcRenderer) {
     const base64Data = tab.canvas.toDataURL('image/png')
     window.electron.ipcRenderer.send('copy-image-to-clipboard', base64Data)
     logToMain('Copied image to clipboard via IPC')
   }
-  
+
   contextMenuVisible.value = false
 }
 
 const openRenameModal = () => {
   if (!contextMenuTabId.value) return
-  const tab = tabs.value.find(t => t.id === contextMenuTabId.value)
+  const tab = tabs.value.find((t) => t.id === contextMenuTabId.value)
   if (tab) {
     renameTargetTabId.value = tab.id
     renameInputName.value = tab.name
@@ -566,7 +553,7 @@ const closeRenameModal = () => {
 
 const confirmRename = async () => {
   if (!renameTargetTabId.value || !renameInputName.value.trim()) return
-  const tab = tabs.value.find(t => t.id === renameTargetTabId.value)
+  const tab = tabs.value.find((t) => t.id === renameTargetTabId.value)
   if (!tab) return
 
   const newName = renameInputName.value.trim()
@@ -575,18 +562,22 @@ const confirmRename = async () => {
     // If it's a local file, rename the actual file on disk!
     if (window.electron && window.electron.ipcRenderer) {
       try {
-        const result = await window.electron.ipcRenderer.invoke('rename-file-on-disk', tab.path, newName)
+        const result = await window.electron.ipcRenderer.invoke(
+          'rename-file-on-disk',
+          tab.path,
+          newName
+        )
         if (result && result.success) {
           tab.path = result.newPath
           const pathParts = result.newPath.replace(/\\/g, '/').split('/')
           tab.name = pathParts[pathParts.length - 1] || newName
           logToMain(`File successfully renamed on disk to: ${result.newPath}`)
         } else {
-          alert(t.failedRename + (result?.error || t.unknownErr))
+          alert(t('app.failedRename') + (result?.error || t('app.unknownErr')))
         }
       } catch (err: any) {
         console.error('Failed to rename file:', err)
-        alert(t.operationFailed + err.message)
+        alert(t('app.operationFailed') + err.message)
       }
     } else {
       // Fallback
@@ -602,7 +593,11 @@ const confirmRename = async () => {
           // Get base64 representation of the canvas
           if (tab.canvas) {
             const base64Data = tab.canvas.toDataURL('image/png')
-            const saveResult = await window.electron.ipcRenderer.invoke('save-image-file', filePath, base64Data)
+            const saveResult = await window.electron.ipcRenderer.invoke(
+              'save-image-file',
+              filePath,
+              base64Data
+            )
             if (saveResult && saveResult.success) {
               // Update tab path, name, and size
               tab.path = filePath
@@ -611,13 +606,13 @@ const confirmRename = async () => {
               tab.size = saveResult.size
               logToMain(`Clipboard image successfully saved to path: ${filePath}`)
             } else {
-              alert(t.failedSave + (saveResult?.error || t.unknownErr))
+              alert(t('app.failedSave') + (saveResult?.error || t('app.unknownErr')))
             }
           }
         }
       } catch (err: any) {
         console.error('Error during rename/save dialog:', err)
-        alert(t.operationFailed + err.message)
+        alert(t('app.operationFailed') + err.message)
       }
     }
     closeRenameModal()
@@ -637,7 +632,7 @@ const closeTab = (id: string, event?: Event) => {
   if (event) {
     event.stopPropagation()
   }
-  const tabIndex = tabs.value.findIndex(tab => tab.id === id)
+  const tabIndex = tabs.value.findIndex((tab) => tab.id === id)
   if (tabIndex === -1) return
 
   const [removedTab] = tabs.value.splice(tabIndex, 1)
@@ -663,10 +658,10 @@ const handleImageClick = (event: MouseEvent) => {
 
   const imgElement = event.target as HTMLImageElement
   const rect = imgElement.getBoundingClientRect()
-  
+
   const scaleX = tab.width / rect.width
   const scaleY = tab.height / rect.height
-  
+
   const x = Math.floor((event.clientX - rect.left) * scaleX)
   const y = Math.floor((event.clientY - rect.top) * scaleY)
 
@@ -678,10 +673,10 @@ const handleImageClick = (event: MouseEvent) => {
       const b = pixel[2]
       const a = pixel[3]
       const alphaVal = parseFloat((a / 255).toFixed(3))
-      
-      const hex = '#' + [r, g, b, a].map(v => v.toString(16).padStart(2, '0')).join('')
+
+      const hex = '#' + [r, g, b, a].map((v) => v.toString(16).padStart(2, '0')).join('')
       const rgba = `rgba(${r}, ${g}, ${b}, ${alphaVal})`
-      
+
       addRecord(x, y, hex, rgba)
     } catch (err) {
       console.error(err)
@@ -691,7 +686,7 @@ const handleImageClick = (event: MouseEvent) => {
 
 const handleKeyDown = (e: KeyboardEvent) => {
   if (
-    document.activeElement?.tagName === 'INPUT' || 
+    document.activeElement?.tagName === 'INPUT' ||
     document.activeElement?.tagName === 'TEXTAREA'
   ) {
     return
@@ -700,13 +695,26 @@ const handleKeyDown = (e: KeyboardEvent) => {
   if (contextMenuVisible.value) {
     const key = e.key.toLowerCase()
     let handled = false
-    if (key === 'x') { closeCurrentTab(); handled = true }
-    else if (key === 'o') { closeOtherTabs(); handled = true }
-    else if (key === 'a') { closeAllTabs(); handled = true }
-    else if (key === 'c') { copyImage(); handled = true }
-    else if (key === 'r') { openRenameModal(); handled = true }
-    else if (key === 'escape') { contextMenuVisible.value = false; handled = true }
-    
+    if (key === 'x') {
+      closeCurrentTab()
+      handled = true
+    } else if (key === 'o') {
+      closeOtherTabs()
+      handled = true
+    } else if (key === 'a') {
+      closeAllTabs()
+      handled = true
+    } else if (key === 'c') {
+      copyImage()
+      handled = true
+    } else if (key === 'r') {
+      openRenameModal()
+      handled = true
+    } else if (key === 'escape') {
+      contextMenuVisible.value = false
+      handled = true
+    }
+
     if (handled) {
       e.preventDefault()
       e.stopPropagation()
@@ -752,10 +760,10 @@ const handleKeyDown = (e: KeyboardEvent) => {
       const b = pixel[2]
       const a = pixel[3]
       const alphaVal = parseFloat((a / 255).toFixed(3))
-      
-      const hex = '#' + [r, g, b, a].map(v => v.toString(16).padStart(2, '0')).join('')
+
+      const hex = '#' + [r, g, b, a].map((v) => v.toString(16).padStart(2, '0')).join('')
       const rgba = `rgba(${r}, ${g}, ${b}, ${alphaVal})`
-      
+
       mouseX.value = x
       mouseY.value = y
       mouseColorHex.value = hex
@@ -766,8 +774,10 @@ const handleKeyDown = (e: KeyboardEvent) => {
         const rect = imageRef.value.getBoundingClientRect()
         const renderX = rect.left + (x + 0.5) * (rect.width / tab.width)
         const renderY = rect.top + (y + 0.5) * (rect.height / tab.height)
-        
-        logToMain(`handleKeyDown moving: key=${e.key}, x=${x}, y=${y}, rectLeft=${rect.left}, rectTop=${rect.top}, renderX=${renderX}, renderY=${renderY}`)
+
+        logToMain(
+          `handleKeyDown moving: key=${e.key}, x=${x}, y=${y}, rectLeft=${rect.left}, rectTop=${rect.top}, renderX=${renderX}, renderY=${renderY}`
+        )
 
         cursorX.value = renderX - rect.left
         cursorY.value = renderY - rect.top
@@ -776,7 +786,7 @@ const handleKeyDown = (e: KeyboardEvent) => {
         lastWarpTime.value = Date.now()
         lastWarpX.value = x
         lastWarpY.value = y
-        
+
         updateLoupe(x, y, tab)
 
         if (window.electron && window.electron.ipcRenderer) {
@@ -791,6 +801,14 @@ const handleKeyDown = (e: KeyboardEvent) => {
 }
 
 onMounted(() => {
+  void window.electron?.ipcRenderer.invoke('set-app-locale', selectedLocale.value)
+  removeSettingsListener = window.api?.onOpenSettings(() => {
+    settingsVisible.value = true
+  })
+  removeMenuActionListener = window.api?.onMenuAction((action) => {
+    if (action === 'open-image') void triggerFilePicker()
+    if (action === 'capture-adb') void triggerAdbCapture()
+  })
   window.addEventListener('paste', handlePaste)
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('focus', handleWindowFocus)
@@ -800,6 +818,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  removeSettingsListener?.()
+  removeMenuActionListener?.()
   window.removeEventListener('paste', handlePaste)
   window.removeEventListener('keydown', handleKeyDown)
   window.removeEventListener('focus', handleWindowFocus)
@@ -812,32 +832,53 @@ onBeforeUnmount(() => {
     <header class="top-toolbar">
       <div class="toolbar-left">
         <button class="menu-btn" @click="triggerFilePicker">
-          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            stroke="currentColor"
+            stroke-width="2.5"
+            fill="none"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="btn-icon"
+          >
+            <path
+              d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+            ></path>
           </svg>
-          {{ t.openImage }}
+          {{ t('app.openImage') }}
         </button>
-        <button class="menu-btn" @click="triggerAdbCapture" :disabled="isCapturingAdb" style="margin-left: 8px;">
-          <svg viewBox="0 0 24 24" width="14" height="14" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round" class="btn-icon">
+        <button
+          class="menu-btn"
+          @click="triggerAdbCapture"
+          :disabled="isCapturingAdb"
+          style="margin-left: 8px"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            stroke="currentColor"
+            stroke-width="2.5"
+            fill="none"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="btn-icon"
+          >
             <rect x="5" y="2" width="14" height="20" rx="2" ry="2"></rect>
             <line x1="12" y1="18" x2="12.01" y2="18"></line>
           </svg>
-          {{ isCapturingAdb ? t.capturing : t.adbScreen }}
+          {{ isCapturingAdb ? t('app.capturing') : t('app.adbScreen') }}
         </button>
-        <input 
-          type="file" 
-          ref="fileInputRef" 
-          multiple 
-          accept="image/*" 
-          class="hidden-file-input" 
+        <input
+          type="file"
+          ref="fileInputRef"
+          multiple
+          accept="image/*"
+          class="hidden-file-input"
           @change="handleFileOpen"
         />
-      </div>
-      <div class="toolbar-center">
-        <!-- Empty for now as requested -->
-      </div>
-      <div class="toolbar-right">
-        <!-- Empty for now as requested -->
       </div>
     </header>
 
@@ -847,10 +888,10 @@ onBeforeUnmount(() => {
       <div class="workspace-area">
         <!-- Tab List -->
         <div class="tabs-bar" v-if="tabs.length > 0">
-          <div 
-            v-for="tab in tabs" 
-            :key="tab.id" 
-            class="tab-item" 
+          <div
+            v-for="tab in tabs"
+            :key="tab.id"
+            class="tab-item"
             :class="{ active: tab.id === activeTabId }"
             @click="activeTabId = tab.id"
             @contextmenu.prevent="handleTabContextMenu(tab, $event)"
@@ -864,16 +905,16 @@ onBeforeUnmount(() => {
         <main class="image-viewport" :class="{ 'is-empty': tabs.length === 0 }">
           <div class="image-wrapper" v-if="activeTab">
             <div class="image-container-relative">
-              <img 
+              <img
                 ref="imageRef"
-                :src="activeTab.url" 
-                class="pixel-image" 
-                @mousemove="handleMouseMove" 
+                :src="activeTab.url"
+                class="pixel-image"
+                @mousemove="handleMouseMove"
                 @mouseleave="handleMouseLeave"
                 @click="handleImageClick"
               />
-              <div 
-                v-show="mouseX !== null && mouseY !== null" 
+              <div
+                v-show="mouseX !== null && mouseY !== null"
                 class="loupe-container"
                 :style="loupeStyle"
               >
@@ -884,14 +925,23 @@ onBeforeUnmount(() => {
           </div>
           <div class="empty-state" v-else @click="triggerFilePicker">
             <div class="upload-icon-wrapper">
-              <svg viewBox="0 0 24 24" width="48" height="48" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+              <svg
+                viewBox="0 0 24 24"
+                width="48"
+                height="48"
+                stroke="currentColor"
+                stroke-width="1.5"
+                fill="none"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
                 <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
                 <circle cx="8.5" cy="8.5" r="1.5"></circle>
                 <polyline points="21 15 16 10 5 21"></polyline>
               </svg>
             </div>
-            <p class="empty-title">{{ t.dragHint }}</p>
-            <p class="empty-desc">{{ t.dragSub }}</p>
+            <p class="empty-title">{{ t('app.dragHint') }}</p>
+            <p class="empty-desc">{{ t('app.dragSub') }}</p>
           </div>
         </main>
       </div>
@@ -900,22 +950,37 @@ onBeforeUnmount(() => {
       <aside class="sidebar right-sidebar">
         <div class="sidebar-wrapper">
           <div class="sidebar-section">
-            <div class="section-title">{{ t.picker }}</div>
+            <div class="section-title">{{ t('app.picker') }}</div>
             <div class="info-card picker-details">
               <div class="info-item">
-                <span class="info-label">{{ t.coords }}</span>
+                <span class="info-label">{{ t('app.coords') }}</span>
                 <span class="info-value coord-val">
                   ({{ mouseX !== null ? mouseX : 0 }}, {{ mouseY !== null ? mouseY : 0 }})
                 </span>
               </div>
-              <div 
-                class="color-row-clickable" 
+              <div
+                class="color-row-clickable"
                 @click="toggleColorFormat"
-                :title="mouseX !== null ? `${t.toggleFormat} (${t.current}: ${colorFormat === 'hex' ? 'RGBA' : 'HEXA'})` : t.toggleFormat"
+                :title="
+                  mouseX !== null
+                    ? `${t('app.toggleFormat')} (${t('app.current')}: ${colorFormat === 'hex' ? 'RGBA' : 'HEXA'})`
+                    : t('app.toggleFormat')
+                "
               >
-                <div class="color-preview" :style="{ backgroundColor: mouseX !== null ? mouseColorHex : '#00000000' }"></div>
+                <div
+                  class="color-preview"
+                  :style="{ backgroundColor: mouseX !== null ? mouseColorHex : '#00000000' }"
+                ></div>
                 <span class="color-value-text">
-                  {{ mouseX !== null ? (colorFormat === 'hex' ? mouseColorHex : mouseColorRgba) : (colorFormat === 'hex' ? '#00000000' : 'rgba(0, 0, 0, 0.000)') }}
+                  {{
+                    mouseX !== null
+                      ? colorFormat === 'hex'
+                        ? mouseColorHex
+                        : mouseColorRgba
+                      : colorFormat === 'hex'
+                        ? '#00000000'
+                        : 'rgba(0, 0, 0, 0.000)'
+                  }}
                 </span>
               </div>
             </div>
@@ -924,15 +989,15 @@ onBeforeUnmount(() => {
           <!-- Color Records Log List -->
           <div class="sidebar-section records-section">
             <div class="section-header">
-              <span class="section-title">{{ t.recordsList }} ({{ filledCount }}/10)</span>
+              <span class="section-title">{{ t('app.recordsList') }} ({{ filledCount }}/10)</span>
               <button class="clear-all-btn" @click="clearAllRecords" v-if="filledCount > 0">
-                {{ t.clearAll }}
+                {{ t('app.clearAll') }}
               </button>
             </div>
             <div class="records-list">
-              <div 
-                v-for="record in records" 
-                :key="record.index" 
+              <div
+                v-for="record in records"
+                :key="record.index"
                 class="record-item"
                 :class="{ 'has-data': record.x !== null }"
               >
@@ -940,8 +1005,14 @@ onBeforeUnmount(() => {
                 <div class="record-content" v-if="record.x !== null">
                   <div class="record-coords">X:{{ record.x }} Y:{{ record.y }}</div>
                   <div class="record-color-row">
-                    <div class="record-color-preview" :style="{ backgroundColor: record.hex || undefined }"></div>
-                    <span class="record-color-text" :title="(colorFormat === 'hex' ? record.hex : record.rgba) || undefined">
+                    <div
+                      class="record-color-preview"
+                      :style="{ backgroundColor: record.hex || undefined }"
+                    ></div>
+                    <span
+                      class="record-color-text"
+                      :title="(colorFormat === 'hex' ? record.hex : record.rgba) || undefined"
+                    >
                       {{ colorFormat === 'hex' ? record.hex : record.rgba }}
                     </span>
                   </div>
@@ -953,11 +1024,11 @@ onBeforeUnmount(() => {
                     <span class="record-color-text">#00000000</span>
                   </div>
                 </div>
-                <button 
-                  class="record-clear-btn" 
-                  @click="clearSlot(record.index)" 
+                <button
+                  class="record-clear-btn"
+                  @click="clearSlot(record.index)"
                   v-if="record.x !== null"
-                  :title="t.clearRecord"
+                  :title="t('app.clearRecord')"
                 >
                   ×
                 </button>
@@ -987,44 +1058,85 @@ onBeforeUnmount(() => {
     </footer>
 
     <!-- Custom Context Menu -->
-    <div 
-      v-if="contextMenuVisible" 
-      class="custom-context-menu" 
+    <div
+      v-if="contextMenuVisible"
+      class="custom-context-menu"
       :style="{ left: `${contextMenuX}px`, top: `${contextMenuY}px` }"
     >
       <div class="context-menu-group">
-        <button class="context-menu-item" @click="closeCurrentTab">{{ t.closeCurrent }}</button>
-        <button class="context-menu-item" @click="closeOtherTabs">{{ t.closeOthers }}</button>
-        <button class="context-menu-item" @click="closeAllTabs">{{ t.closeAll }}</button>
+        <button class="context-menu-item" @click="closeCurrentTab">
+          {{ t('app.closeCurrent') }}
+        </button>
+        <button class="context-menu-item" @click="closeOtherTabs">
+          {{ t('app.closeOthers') }}
+        </button>
+        <button class="context-menu-item" @click="closeAllTabs">{{ t('app.closeAll') }}</button>
       </div>
       <div class="context-menu-divider"></div>
       <div class="context-menu-group">
-        <button class="context-menu-item" @click="copyImage">{{ t.copyImage }}</button>
-        <button class="context-menu-item" @click="openRenameModal">{{ t.rename }}</button>
+        <button class="context-menu-item" @click="copyImage">{{ t('app.copyImage') }}</button>
+        <button class="context-menu-item" @click="openRenameModal">{{ t('app.rename') }}</button>
       </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div v-if="settingsVisible" class="rename-modal-overlay" @click.self="settingsVisible = false">
+      <section
+        class="rename-modal settings-modal"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('app.settingsTitle')"
+      >
+        <div class="rename-modal-header">
+          <h3 class="rename-modal-title">{{ t('app.settingsTitle') }}</h3>
+          <p class="rename-modal-subtitle">{{ t('app.settingsDescription') }}</p>
+        </div>
+        <div class="settings-field">
+          <label class="settings-label" for="language-select">{{ t('app.language') }}</label>
+          <select id="language-select" v-model="selectedLocale" class="language-select">
+            <option
+              v-for="supportedLocale in locales"
+              :key="supportedLocale.code"
+              :value="supportedLocale.code"
+            >
+              {{ supportedLocale.label }}
+            </option>
+          </select>
+          <p class="settings-help">{{ t('app.languageDescription') }}</p>
+        </div>
+        <div class="rename-modal-footer">
+          <button class="rename-modal-btn cancel" @click="settingsVisible = false">
+            {{ t('app.close') }}
+          </button>
+        </div>
+      </section>
     </div>
 
     <!-- Rename Modal Dialog -->
     <div v-if="renameModalVisible" class="rename-modal-overlay" @click.self="closeRenameModal">
       <div class="rename-modal">
         <div class="rename-modal-header">
-          <h3 class="rename-modal-title">{{ t.renameTitle }}</h3>
-          <p class="rename-modal-subtitle">{{ t.renameSub }}</p>
+          <h3 class="rename-modal-title">{{ t('app.renameTitle') }}</h3>
+          <p class="rename-modal-subtitle">{{ t('app.renameSub') }}</p>
         </div>
         <div class="rename-modal-body">
-          <input 
-            v-model="renameInputName" 
-            type="text" 
-            class="rename-modal-input" 
-            :placeholder="t.inputNewName"
+          <input
+            v-model="renameInputName"
+            type="text"
+            class="rename-modal-input"
+            :placeholder="t('app.inputNewName')"
             @keydown.enter="confirmRename"
             @keydown.esc="closeRenameModal"
             ref="renameInputRef"
           />
         </div>
         <div class="rename-modal-footer">
-          <button class="rename-modal-btn cancel" @click="closeRenameModal">{{ t.cancel }}</button>
-          <button class="rename-modal-btn confirm" @click="confirmRename">{{ t.confirm }}</button>
+          <button class="rename-modal-btn cancel" @click="closeRenameModal">
+            {{ t('app.cancel') }}
+          </button>
+          <button class="rename-modal-btn confirm" @click="confirmRename">
+            {{ t('app.confirm') }}
+          </button>
         </div>
       </div>
     </div>
@@ -1038,7 +1150,7 @@ onBeforeUnmount(() => {
   height: 110px;
   border-radius: 50%;
   border: 2px solid #fff;
-  box-shadow: 0 0 8px rgba(0,0,0,0.5);
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
   pointer-events: none;
   overflow: hidden;
   background-color: #333;

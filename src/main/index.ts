@@ -5,6 +5,33 @@ import { exec, execFile } from 'child_process'
 import { existsSync } from 'fs'
 import icon from '../../resources/icon.png?asset'
 
+/**
+ * GUI applications launched outside a shell (for example from Finder) usually
+ * receive a minimal PATH. Resolve adb explicitly so packaged builds can still
+ * use an Android SDK installed for the current user.
+ */
+function findAdbPath(): string | null {
+  const adbName = process.platform === 'win32' ? 'adb.exe' : 'adb'
+  const home = process.env.HOME || process.env.USERPROFILE || ''
+  const sdkRoots = [
+    process.env.ANDROID_SDK_ROOT,
+    process.env.ANDROID_HOME,
+    process.platform === 'darwin' ? join(home, 'Library', 'Android', 'sdk') : undefined,
+    process.platform === 'win32' && process.env.LOCALAPPDATA
+      ? join(process.env.LOCALAPPDATA, 'Android', 'Sdk')
+      : undefined,
+    process.platform === 'linux' ? join(home, 'Android', 'Sdk') : undefined
+  ].filter((value): value is string => Boolean(value))
+
+  const candidates = [
+    ...sdkRoots.map((sdkRoot) => join(sdkRoot, 'platform-tools', adbName)),
+    // Common package-manager locations are not present in Finder's PATH on macOS.
+    ...(process.platform === 'darwin' ? ['/opt/homebrew/bin/adb', '/usr/local/bin/adb'] : [])
+  ]
+
+  return candidates.find(existsSync) || null
+}
+
 function createWindow(): void {
   // Create the browser window.
   const mainWindow = new BrowserWindow({
@@ -41,61 +68,90 @@ function createWindow(): void {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
-  app.setName('ColorPicker')
+  app.setName('拾色')
 
-  const locale = app.getLocale()
-  const isZh = locale.startsWith('zh')
   const { Menu } = require('electron')
 
-  const template: any[] = [
-    ...(process.platform === 'darwin' ? [{
-      label: app.name,
-      submenu: [
-        { role: 'about', label: isZh ? '关于 ColorPicker' : 'About ColorPicker' },
-        { type: 'separator' },
-        { role: 'services', label: isZh ? '服务' : 'Services' },
-        { type: 'separator' },
-        { role: 'hide', label: isZh ? '隐藏 ColorPicker' : 'Hide ColorPicker' },
-        { role: 'hideOthers', label: isZh ? '隐藏其他' : 'Hide Others' },
-        { role: 'unhide', label: isZh ? '显示全部' : 'Show All' },
-        { type: 'separator' },
-        { role: 'quit', label: isZh ? '退出 ColorPicker' : 'Quit ColorPicker' }
-      ]
-    }] : []),
-    {
-      label: isZh ? '文件' : 'File',
-      submenu: [
-        process.platform === 'darwin' ? { role: 'close', label: isZh ? '关闭窗口' : 'Close Window' } : { role: 'quit', label: isZh ? '退出' : 'Quit' }
-      ]
-    },
-    {
-      label: isZh ? '编辑' : 'Edit',
-      submenu: [
-        { role: 'undo', label: isZh ? '撤销' : 'Undo' },
-        { role: 'redo', label: isZh ? '重做' : 'Redo' },
-        { type: 'separator' },
-        { role: 'cut', label: isZh ? '剪切' : 'Cut' },
-        { role: 'copy', label: isZh ? '复制' : 'Copy' },
-        { role: 'paste', label: isZh ? '粘贴' : 'Paste' }
-      ]
-    },
-    {
-      label: isZh ? '视图' : 'View',
-      submenu: [
-        { role: 'reload', label: isZh ? '重新加载' : 'Reload' },
-        { role: 'forceReload', label: isZh ? '强制重新加载' : 'Force Reload' },
-        { role: 'toggleDevTools', label: isZh ? '切换开发者工具' : 'Toggle Developer Tools' },
-        { type: 'separator' },
-        { role: 'resetZoom', label: isZh ? '实际大小' : 'Actual Size' },
-        { role: 'zoomIn', label: isZh ? '放大' : 'Zoom In' },
-        { role: 'zoomOut', label: isZh ? '缩小' : 'Zoom Out' },
-        { type: 'separator' },
-        { role: 'togglefullscreen', label: isZh ? '切换全屏' : 'Toggle Full Screen' }
-      ]
-    }
-  ]
-  const menu = Menu.buildFromTemplate(template)
-  Menu.setApplicationMenu(menu)
+  const setApplicationMenuLanguage = (locale: string) => {
+    const isZh = locale.toLowerCase().startsWith('zh')
+    const template: any[] = [
+      ...(process.platform === 'darwin'
+        ? [
+            {
+              label: app.name,
+              submenu: [
+                { role: 'about', label: isZh ? `关于 ${app.name}` : `About ${app.name}` },
+                { type: 'separator' },
+                { role: 'services', label: isZh ? '服务' : 'Services' },
+                { type: 'separator' },
+                {
+                  label: isZh ? '⚙︎ 设置' : '⚙︎ Settings',
+                  accelerator: 'CommandOrControl+,',
+                  click: () => BrowserWindow.getFocusedWindow()?.webContents.send('open-settings')
+                },
+                { type: 'separator' },
+                { role: 'hide', label: isZh ? `隐藏 ${app.name}` : `Hide ${app.name}` },
+                { role: 'hideOthers', label: isZh ? '隐藏其他' : 'Hide Others' },
+                { role: 'unhide', label: isZh ? '显示全部' : 'Show All' },
+                { type: 'separator' },
+                { role: 'quit', label: isZh ? `退出 ${app.name}` : `Quit ${app.name}` }
+              ]
+            }
+          ]
+        : []),
+      {
+        label: isZh ? '文件' : 'File',
+        submenu: [
+          {
+            label: isZh ? '打开图片' : 'Open Image',
+            accelerator: 'CommandOrControl+O',
+            click: () =>
+              BrowserWindow.getFocusedWindow()?.webContents.send('menu-action', 'open-image')
+          },
+          {
+            label: isZh ? 'ADB 截图' : 'ADB Screen',
+            click: () =>
+              BrowserWindow.getFocusedWindow()?.webContents.send('menu-action', 'capture-adb')
+          },
+          { type: 'separator' },
+          process.platform === 'darwin'
+            ? { role: 'close', label: isZh ? '关闭窗口' : 'Close Window' }
+            : { role: 'quit', label: isZh ? '退出' : 'Quit' }
+        ]
+      },
+      {
+        label: isZh ? '编辑' : 'Edit',
+        submenu: [
+          { role: 'undo', label: isZh ? '撤销' : 'Undo' },
+          { role: 'redo', label: isZh ? '重做' : 'Redo' },
+          { type: 'separator' },
+          { role: 'cut', label: isZh ? '剪切' : 'Cut' },
+          { role: 'copy', label: isZh ? '复制' : 'Copy' },
+          { role: 'paste', label: isZh ? '粘贴' : 'Paste' }
+        ]
+      },
+      {
+        label: isZh ? '视图' : 'View',
+        submenu: [
+          { role: 'reload', label: isZh ? '重新加载' : 'Reload' },
+          { role: 'forceReload', label: isZh ? '强制重新加载' : 'Force Reload' },
+          { role: 'toggleDevTools', label: isZh ? '切换开发者工具' : 'Toggle Developer Tools' },
+          { type: 'separator' },
+          { role: 'resetZoom', label: isZh ? '实际大小' : 'Actual Size' },
+          { role: 'zoomIn', label: isZh ? '放大' : 'Zoom In' },
+          { role: 'zoomOut', label: isZh ? '缩小' : 'Zoom Out' },
+          { type: 'separator' },
+          { role: 'togglefullscreen', label: isZh ? '切换全屏' : 'Toggle Full Screen' }
+        ]
+      }
+    ]
+    Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+  }
+
+  setApplicationMenuLanguage(app.getLocale())
+  ipcMain.handle('set-app-locale', (_event, locale: string) => {
+    if (locale === 'zh-CN' || locale === 'en-US') setApplicationMenuLanguage(locale)
+  })
 
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
@@ -122,7 +178,7 @@ app.whenReady().then(() => {
   // IPC to move mouse cursor (receives viewport-relative coordinates and converts to screen-space)
   ipcMain.on('move-cursor', (event, clientX: number, clientY: number) => {
     if (process.platform !== 'darwin') return
-    
+
     const webContents = event.sender
     const win = BrowserWindow.fromWebContents(webContents)
     if (!win) return
@@ -134,7 +190,10 @@ app.whenReady().then(() => {
     // Write logs to debug.log for inspection
     try {
       const { appendFileSync } = require('fs')
-      appendFileSync(join(app.getAppPath(), 'debug.log'), `[Main] move-cursor: clientX=${clientX}, clientY=${clientY}, screenX=${screenX}, screenY=${screenY}, contentBounds=${JSON.stringify(contentBounds)}\n`)
+      appendFileSync(
+        join(app.getAppPath(), 'debug.log'),
+        `[Main] move-cursor: clientX=${clientX}, clientY=${clientY}, screenX=${screenX}, screenY=${screenY}, contentBounds=${JSON.stringify(contentBounds)}\n`
+      )
     } catch (e) {
       console.error(e)
     }
@@ -204,10 +263,10 @@ app.whenReady().then(() => {
   ipcMain.handle('save-image-file', async (_event, filePath: string, base64Data: string) => {
     try {
       const { writeFileSync } = require('fs')
-      const base64Clean = base64Data.replace(/^data:image\/\w+;base64,/, "")
+      const base64Clean = base64Data.replace(/^data:image\/\w+;base64,/, '')
       const buffer = Buffer.from(base64Clean, 'base64')
       writeFileSync(filePath, buffer)
-      
+
       // Get file size
       const { statSync } = require('fs')
       const stats = statSync(filePath)
@@ -221,7 +280,7 @@ app.whenReady().then(() => {
   // IPC to copy image to clipboard
   ipcMain.on('copy-image-to-clipboard', (_event, base64Data: string) => {
     const { clipboard, nativeImage } = require('electron')
-    const base64Clean = base64Data.replace(/^data:image\/\w+;base64,/, "")
+    const base64Clean = base64Data.replace(/^data:image\/\w+;base64,/, '')
     const image = nativeImage.createFromBuffer(Buffer.from(base64Clean, 'base64'))
     clipboard.writeImage(image)
   })
@@ -234,19 +293,17 @@ app.whenReady().then(() => {
 
     const result = await dialog.showOpenDialog(win, {
       properties: ['openFile', 'multiSelections'],
-      filters: [
-        { name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }
-      ]
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp', 'gif'] }]
     })
-    
+
     if (result.canceled || result.filePaths.length === 0) {
       return null
     }
 
     const fs = require('fs')
     const path = require('path')
-    
-    return result.filePaths.map(filePath => {
+
+    return result.filePaths.map((filePath) => {
       const stats = fs.statSync(filePath)
       const data = fs.readFileSync(filePath)
       const ext = path.extname(filePath).toLowerCase()
@@ -272,7 +329,7 @@ app.whenReady().then(() => {
     try {
       const dir = path.dirname(oldPath)
       const ext = path.extname(oldPath)
-      
+
       const finalName = newName.toLowerCase().endsWith(ext.toLowerCase()) ? newName : newName + ext
       const newPath = path.join(dir, finalName)
 
@@ -295,45 +352,58 @@ app.whenReady().then(() => {
   // IPC to capture adb screen
   ipcMain.handle('capture-adb-screen', async () => {
     return new Promise((resolve) => {
-      const { exec } = require('child_process')
-      // Ensure we get raw buffer output, not a string
-      exec('adb exec-out screencap -p', { encoding: 'buffer', maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
-        if (error) {
-          resolve({ success: false, error: error.message || (stderr ? stderr.toString() : 'Unknown error') })
-          return
-        }
-        if (!stdout || stdout.length === 0) {
-          resolve({ success: false, error: 'Empty output from adb. Please check if device is connected.' })
-          return
-        }
-        
-        try {
-          const fs = require('fs')
-          const path = require('path')
-          const os = require('os')
-          const saveDir = path.join(os.homedir(), 'Pictures', 'colorpicker')
-          if (!fs.existsSync(saveDir)) {
-            fs.mkdirSync(saveDir, { recursive: true })
+      const adbPath = findAdbPath() || 'adb'
+      // execFile avoids shell quoting issues and preserves the raw PNG buffer.
+      execFile(
+        adbPath,
+        ['exec-out', 'screencap', '-p'],
+        { encoding: 'buffer', maxBuffer: 1024 * 1024 * 50 },
+        (error, stdout, stderr) => {
+          if (error) {
+            const details = stderr?.toString().trim() || error.message
+            const hint =
+              error.code === 'ENOENT'
+                ? 'ADB not found. Please install Android SDK Platform-Tools or set ANDROID_SDK_ROOT.'
+                : details || 'Unknown error'
+            resolve({ success: false, error: hint })
+            return
           }
-          
-          const date = new Date()
-          const pad = (n: number) => n.toString().padStart(2, '0')
-          const filename = `adb_screenshot_${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.png`
-          const savePath = path.join(saveDir, filename)
-          
-          fs.writeFileSync(savePath, stdout)
-          
-          resolve({
-            success: true,
-            dataUrl: `data:image/png;base64,${stdout.toString('base64')}`,
-            size: stdout.length,
-            path: savePath,
-            name: filename
-          })
-        } catch (err: any) {
-          resolve({ success: false, error: 'Failed to save screenshot: ' + err.message })
+          if (!stdout || stdout.length === 0) {
+            resolve({
+              success: false,
+              error: 'Empty output from adb. Please check if device is connected.'
+            })
+            return
+          }
+
+          try {
+            const fs = require('fs')
+            const path = require('path')
+            const os = require('os')
+            const saveDir = path.join(os.homedir(), 'Pictures', 'colorpicker')
+            if (!fs.existsSync(saveDir)) {
+              fs.mkdirSync(saveDir, { recursive: true })
+            }
+
+            const date = new Date()
+            const pad = (n: number) => n.toString().padStart(2, '0')
+            const filename = `adb_screenshot_${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.png`
+            const savePath = path.join(saveDir, filename)
+
+            fs.writeFileSync(savePath, stdout)
+
+            resolve({
+              success: true,
+              dataUrl: `data:image/png;base64,${stdout.toString('base64')}`,
+              size: stdout.length,
+              path: savePath,
+              name: filename
+            })
+          } catch (err: any) {
+            resolve({ success: false, error: 'Failed to save screenshot: ' + err.message })
+          }
         }
-      })
+      )
     })
   })
 
