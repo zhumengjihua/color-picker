@@ -1,34 +1,24 @@
 # AGENTS.md
 
-## 项目概览
+适用于本项目及全部子目录；子目录有更具体说明时一并遵循，测试禁令适用于所有目录。
 
-这是一个 Electron + Vue 3 + TypeScript 图片取色工具。界面文案支持中英文，但项目文档和协作说明使用中文。
+## 统一约定
 
-## 目录职责
+- 严禁编写测试文件：不得新增或修改测试文件、测试用例、测试脚本及测试夹具；保留已有测试，不因本约定删除它们。
+- 不需要做单元测试，不执行单元测试或其他自动化测试，也不为测试新增依赖或配置。
+- 按需使用构建、静态检查和人工确认；纯文档修改只核对内容与差异。未执行的验证必须如实说明。
+- 修改前阅读相关源码并检查 Git 状态；保留用户已有改动，只处理当前任务，避免无关重构和依赖升级。
+- 使用中文说明，沿用现有代码风格。不提交凭据、密钥、账号、设备数据、日志或生成产物；不读取或改动签名材料。
+- 设备操作、权限修改、部署和推送按用户授权执行，不绕过系统授权。
 
-- `src/main/`：Electron 主进程、原生文件操作、ADB 和 macOS 光标控制。
-- `src/preload/`：只放主进程与渲染进程之间的桥接接口。
-- `src/renderer/src/`：Vue 界面、取色逻辑、样式和国际化资源。
-- `resources/`、`build/`：运行时资源和打包资源。
+## 项目说明
 
-## 开发约定
+Electron + Vue 3 + TypeScript 图片取色工具，支持 ADB 截图与中英文界面。
 
-- 使用 TypeScript、Vue Composition API 和现有代码风格。
-- 涉及文件系统、剪贴板、对话框或外部命令的逻辑放在主进程，通过 IPC 调用。
-- 新增界面文案时，同时更新 `zh-CN.ts` 和 `en-US.ts`。
-- 不提交 `node_modules/`、`out/`、`dist/` 或调试日志。
-- 保留用户已有改动，不做与任务无关的重构。
+## 维护要点
 
-## 常用命令
-
-```bash
-pnpm install
-pnpm dev
-pnpm lint
-pnpm typecheck
-pnpm build
-```
-
-## 交付前检查
-
-至少运行 `pnpm lint` 和 `pnpm typecheck`。修改构建、主进程或打包配置时，再运行 `pnpm build`。涉及 ADB、文件保存或 macOS 光标控制的功能还需在对应平台手动验证。
+- `src/main/` 负责文件、ADB 和原生操作；`src/preload/` 仅提供桥接；`src/renderer/src/` 负责 Vue 界面。
+- 文件系统与外部命令通过主进程 IPC 执行；新增文案同时维护 `zh-CN.ts`、`en-US.ts`。
+- 沿用 TypeScript 和 Vue Composition API，不提交 `node_modules/`、`out/`、`dist/`。
+- 开发使用 `pnpm dev`；按需运行 `pnpm lint`、`pnpm typecheck`、`pnpm build`。
+- ADB、文件保存和 macOS 光标操作需对应平台人工确认。
