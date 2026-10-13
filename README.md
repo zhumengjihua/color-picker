@@ -14,7 +14,7 @@
 - 复制图片、关闭标签页以及重命名图片
 - 对本地图片重命名时同步修改磁盘文件
 - 将剪贴板图片命名并保存为 PNG、JPEG 或 WebP 文件
-- 通过 ADB 获取 Android 设备截图
+- 通过 ADB 获取 Android 设备截图，支持二维码或配对码无线连接手机
 - 支持简体中文与英文界面，设置会保存在本机
 
 ## 使用方法
@@ -57,16 +57,31 @@ HEXA 使用 `#RRGGBBAA` 格式，末尾两位表示透明度。
 连接已开启 USB 调试的 Android 设备后，点击“ADB 截图”即可抓取屏幕。截图会自动保存到：
 
 ```text
-~/Pictures/colorpicker/
+<系统图片目录>/colorpicker/
 ```
 
-使用此功能前，请安装 Android SDK Platform-Tools，并确保以下命令能够识别设备：
+macOS 一般是 `~/Pictures/colorpicker/`；Windows 是“图片”文件夹下的 `colorpicker`，图片文件夹被移到 OneDrive 等位置时跟随移动。
 
-```bash
-adb devices
-```
+应用按以下顺序查找 adb，使用第一个可执行的：
 
-应用会优先从 `ANDROID_SDK_ROOT`、`ANDROID_HOME` 和常见 SDK 安装目录查找 ADB。
+1. 设置中手动指定的路径
+2. `ANDROID_SDK_ROOT` / `ANDROID_HOME`（同时读取登录 shell 中的配置，从 Finder 启动也能生效）
+3. `PATH`（登录 shell 与当前进程）
+4. Android Studio 默认 SDK 目录，以及 macOS 上的 Homebrew 路径
+5. 应用此前下载的 platform-tools
+
+都找不到时，截图会询问是否从 Google 下载 Android SDK Platform-Tools。能取到 Google SDK 仓库清单时会校验下载文件的 SHA1，并保存在应用数据目录（Electron `userData`，macOS 位于 `~/Library/Application Support/` 下）的 `adb/` 中，只供本应用使用。当前使用的 adb、自定义路径和重新下载入口都在设置中。
+
+截图前请确保设备已授权 USB 调试，可用 `adb devices` 确认。
+
+同时连接多台设备时，在工具栏的设备下拉框中选择截图设备，选择会保存在本机。
+
+### 无线连接手机
+
+点击工具栏的“连接手机”（或菜单“文件 → 连接手机”），通过 Android 11 及以上的无线调试连接，手机和电脑需在同一 Wi-Fi：
+
+- **二维码配对**：在手机上打开“开发者选项 → 无线调试 → 使用二维码配对设备”，扫描弹窗中的二维码，配对和连接自动完成。依赖局域网 mDNS 设备发现，部分公司或访客网络会拦截。
+- **配对码配对**：在手机上打开“使用配对码配对设备”，填写显示的 IP 地址、端口和 6 位配对码。自动连接失败时，再填写无线调试主页面上的 IP 地址和端口（与配对端口不同）后点“仅连接”。已配对过的手机也可以直接“仅连接”。
 
 ## 开发环境
 
@@ -125,9 +140,10 @@ build/                    Electron Builder 构建资源
 
 ## 平台说明
 
-- macOS：支持方向键同步移动系统光标；开发模式会尝试使用 Swift 编译辅助程序。
-- Windows / Linux：可以取色和使用方向键调整像素位置，但不会移动系统光标。
-- ADB 截图依赖本机安装的 Android SDK Platform-Tools 和已授权的设备连接。
+- macOS：支持方向键同步移动系统光标；开发模式会尝试使用 Swift 编译辅助程序。设置在应用菜单中（`Command + ,`）。
+- Windows：支持方向键同步移动系统光标（通过常驻的 PowerShell 进程调用系统接口）。菜单栏默认隐藏，按 `Alt` 显示；设置可从工具栏右侧的齿轮按钮、“文件 → 设置”或 `Ctrl + ,` 打开。
+- Linux：可以取色和使用方向键调整像素位置，但不会移动系统光标；设置入口与 Windows 相同。
+- ADB 截图需要已授权的设备连接；本机没有 adb 时可在应用内下载 Platform-Tools。
 
 ## 许可证
 

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { locales, setLocale, type AppLocale } from './i18n'
+import AdbConnectDialog from './components/AdbConnectDialog.vue'
 
 interface ImageTab {
   id: string
@@ -30,6 +31,88 @@ const selectedLocale = computed({
   }
 })
 const settingsVisible = ref(false)
+// macOS 的设置入口在应用菜单；Windows / Linux 的菜单栏默认隐藏，在工具栏提供设置按钮
+const isMac = window.electron?.process?.platform === 'darwin'
+const pickerHintOpen = ref(false)
+
+/* 侧栏宽度：拖动左边缘调整，记住在本机 */
+const SIDEBAR_WIDTH_STORAGE_KEY = 'color-picker.sidebarWidth'
+const SIDEBAR_DEFAULT_WIDTH = 300
+const SIDEBAR_MIN_WIDTH = 240
+const SIDEBAR_MAX_WIDTH = 560
+// 截图区至少保留的宽度
+const WORKSPACE_MIN_WIDTH = 320
+
+const clampSidebarWidth = (width: number): number => {
+  const max = Math.max(
+    SIDEBAR_MIN_WIDTH,
+    Math.min(SIDEBAR_MAX_WIDTH, window.innerWidth - WORKSPACE_MIN_WIDTH)
+  )
+  return Math.round(Math.min(max, Math.max(SIDEBAR_MIN_WIDTH, width)))
+}
+
+const loadSidebarWidth = (): number => {
+  try {
+    const saved = Number(localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY))
+    return saved ? clampSidebarWidth(saved) : SIDEBAR_DEFAULT_WIDTH
+  } catch {
+    return SIDEBAR_DEFAULT_WIDTH
+  }
+}
+
+const sidebarWidth = ref(loadSidebarWidth())
+const isResizingSidebar = ref(false)
+
+watch(sidebarWidth, (width) => {
+  try {
+    localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(width))
+  } catch {
+    // 存储不可用时只影响下次启动的宽度
+  }
+})
+
+const startSidebarResize = (event: PointerEvent): void => {
+  if (event.button !== 0) return
+  event.preventDefault()
+  const handle = event.currentTarget as HTMLElement
+  handle.setPointerCapture(event.pointerId)
+  isResizingSidebar.value = true
+  const startX = event.clientX
+  const startWidth = sidebarWidth.value
+
+  // 侧栏在右侧，手柄向左拖动时变宽
+  const handleMove = (moveEvent: PointerEvent): void => {
+    sidebarWidth.value = clampSidebarWidth(startWidth + startX - moveEvent.clientX)
+  }
+  const handleEnd = (): void => {
+    isResizingSidebar.value = false
+    handle.removeEventListener('pointermove', handleMove)
+    handle.removeEventListener('pointerup', handleEnd)
+    handle.removeEventListener('pointercancel', handleEnd)
+  }
+  handle.addEventListener('pointermove', handleMove)
+  handle.addEventListener('pointerup', handleEnd)
+  handle.addEventListener('pointercancel', handleEnd)
+}
+
+const handleSidebarResizerKey = (event: KeyboardEvent): void => {
+  const step = event.shiftKey ? 40 : 10
+  if (event.key === 'ArrowLeft') sidebarWidth.value = clampSidebarWidth(sidebarWidth.value + step)
+  else if (event.key === 'ArrowRight') {
+    sidebarWidth.value = clampSidebarWidth(sidebarWidth.value - step)
+  } else return
+  // 阻止全局方向键逐像素移动
+  event.preventDefault()
+  event.stopPropagation()
+}
+
+const resetSidebarWidth = (): void => {
+  sidebarWidth.value = clampSidebarWidth(SIDEBAR_DEFAULT_WIDTH)
+}
+
+const handleWindowResize = (): void => {
+  sidebarWidth.value = clampSidebarWidth(sidebarWidth.value)
+}
 let removeSettingsListener: (() => void) | undefined
 let removeMenuActionListener: (() => void) | undefined
 
@@ -41,6 +124,7 @@ const mouseColorRgba = ref<string>('rgba(255, 255, 255, 1.000)')
 
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const imageRef = ref<HTMLImageElement | null>(null)
+const viewportRef = ref<HTMLElement | null>(null)
 const lastWarpTime = ref<number>(0)
 const lastWarpX = ref<number | null>(null)
 const lastWarpY = ref<number | null>(null)
@@ -49,7 +133,7 @@ const cursorX = ref<number | null>(null)
 const cursorY = ref<number | null>(null)
 const loupeCanvasRef = ref<HTMLCanvasElement | null>(null)
 
-const updateLoupe = (x: number, y: number, tab: ImageTab) => {
+const updateLoupe = (x: number, y: number, tab: ImageTab): void => {
   if (!loupeCanvasRef.value || !tab.canvas) return
   const loupeCtx = loupeCanvasRef.value.getContext('2d')
   if (!loupeCtx) return
@@ -64,7 +148,8 @@ const updateLoupe = (x: number, y: number, tab: ImageTab) => {
   loupeCtx.drawImage(tab.canvas, sx, sy, size, size, 0, 0, 110, 110)
 
   loupeCtx.lineWidth = 1
-  loupeCtx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
+  // 中灰网格线在亮色和暗色像素上都能看清
+  loupeCtx.strokeStyle = 'rgba(128, 128, 128, 0.45)'
   for (let i = 0; i <= size; i++) {
     loupeCtx.beginPath()
     loupeCtx.moveTo(i * 10, 0)
@@ -78,14 +163,29 @@ const updateLoupe = (x: number, y: number, tab: ImageTab) => {
   }
 }
 
+// 放大镜尺寸：110px 画布，下方坐标标签约 24px，距光标 15px
+const LOUPE_OFFSET = 15
+const LOUPE_WIDTH = 110
+const LOUPE_HEIGHT = 110 + 24
+
 const loupeStyle = computed(() => {
   if (cursorX.value === null || cursorY.value === null) return { display: 'none' }
-  let left = cursorX.value + 15
-  let top = cursorY.value + 15
-  if (imageRef.value) {
-    const rect = imageRef.value.getBoundingClientRect()
-    if (cursorX.value > rect.width - 130) left = cursorX.value - 125
-    if (cursorY.value > rect.height - 130) top = cursorY.value - 125
+  let left = cursorX.value + LOUPE_OFFSET
+  let top = cursorY.value + LOUPE_OFFSET
+  if (imageRef.value && viewportRef.value) {
+    // 以截图区的可见范围（不含滚动条）判断，靠近右侧或底部时翻到光标另一侧
+    const imageRect = imageRef.value.getBoundingClientRect()
+    const viewportRect = viewportRef.value.getBoundingClientRect()
+    const visibleRight = viewportRect.left + viewportRef.value.clientWidth
+    const visibleBottom = viewportRect.top + viewportRef.value.clientHeight
+    const cursorClientX = imageRect.left + cursorX.value
+    const cursorClientY = imageRect.top + cursorY.value
+    if (cursorClientX + LOUPE_OFFSET + LOUPE_WIDTH > visibleRight) {
+      left = cursorX.value - LOUPE_OFFSET - LOUPE_WIDTH
+    }
+    if (cursorClientY + LOUPE_OFFSET + LOUPE_HEIGHT > visibleBottom) {
+      top = cursorY.value - LOUPE_OFFSET - LOUPE_HEIGHT
+    }
   }
   return {
     left: `${left}px`,
@@ -94,7 +194,7 @@ const loupeStyle = computed(() => {
   }
 })
 
-const logToMain = (msg: string) => {
+const logToMain = (msg: string): void => {
   if (window.electron && window.electron.ipcRenderer) {
     window.electron.ipcRenderer.send('log-message', `[Renderer] ${msg}`)
   }
@@ -120,7 +220,7 @@ const records = ref<RecordSlot[]>(
 
 const filledCount = computed(() => records.value.filter((r) => r.x !== null).length)
 
-const addRecord = (x: number, y: number, hex: string, rgba: string) => {
+const addRecord = (x: number, y: number, hex: string, rgba: string): void => {
   const emptySlot = records.value.find((r) => r.x === null)
   if (emptySlot) {
     emptySlot.x = x
@@ -130,7 +230,7 @@ const addRecord = (x: number, y: number, hex: string, rgba: string) => {
   }
 }
 
-const clearSlot = (index: number) => {
+const clearSlot = (index: number): void => {
   const slot = records.value.find((r) => r.index === index)
   if (slot) {
     slot.x = null
@@ -140,7 +240,7 @@ const clearSlot = (index: number) => {
   }
 }
 
-const clearAllRecords = () => {
+const clearAllRecords = (): void => {
   records.value.forEach((slot) => {
     slot.x = null
     slot.y = null
@@ -168,7 +268,7 @@ const formatFilename = (name: string | undefined, maxLength = 22): string => {
   return name.substring(0, keep) + '...' + name.substring(name.length - keep)
 }
 
-const addImages = (files: File[] | FileList) => {
+const addImages = (files: File[] | FileList): void => {
   Array.from(files).forEach((file) => {
     if (!file.type.startsWith('image/')) return
 
@@ -200,7 +300,7 @@ const addImages = (files: File[] | FileList) => {
         size: file.size || 0,
         canvas,
         ctx,
-        path: (file as any).path || null
+        path: window.api?.getPathForFile(file) ?? null
       }
 
       tabs.value.push(newTab)
@@ -216,7 +316,7 @@ interface NativeImageFile {
   dataUrl: string
 }
 
-const addNativeImages = (files: NativeImageFile[]) => {
+const addNativeImages = (files: NativeImageFile[]): void => {
   files.forEach((file) => {
     const id = Math.random().toString(36).substring(2, 9)
 
@@ -249,7 +349,7 @@ const addNativeImages = (files: NativeImageFile[]) => {
   })
 }
 
-const triggerFilePicker = async () => {
+const triggerFilePicker = async (): Promise<void> => {
   if (window.electron && window.electron.ipcRenderer) {
     try {
       const files = await window.electron.ipcRenderer.invoke('show-open-dialog')
@@ -267,15 +367,93 @@ const triggerFilePicker = async () => {
   }
 }
 
+interface AdbDevice {
+  serial: string
+  state: string
+  model: string | null
+  wireless: boolean
+}
+
+const ADB_DEVICE_STORAGE_KEY = 'color-picker.adbDevice'
+const loadSavedAdbSerial = (): string => {
+  try {
+    return localStorage.getItem(ADB_DEVICE_STORAGE_KEY) || ''
+  } catch {
+    return ''
+  }
+}
+
+const adbDevices = ref<AdbDevice[]>([])
+const selectedAdbSerial = ref(loadSavedAdbSerial())
+const connectDialogVisible = ref(false)
+
+watch(selectedAdbSerial, (serial) => {
+  try {
+    if (serial) localStorage.setItem(ADB_DEVICE_STORAGE_KEY, serial)
+  } catch {
+    // 存储不可用时只影响下次启动的默认选择
+  }
+})
+
+const selectedAdbDeviceStatus = computed(() => {
+  const device = adbDevices.value.find((item) => item.serial === selectedAdbSerial.value)
+  if (!device) return ''
+  return device.state === 'device' ? 'online' : 'warn'
+})
+
+const adbDeviceLabel = (device: AdbDevice): string => {
+  const name = device.model || device.serial
+  const parts = [device.wireless ? `${name} (${t('app.deviceWireless')})` : name]
+  if (device.state === 'unauthorized') parts.push(t('app.deviceUnauthorized'))
+  else if (device.state !== 'device') parts.push(device.state)
+  return parts.join(' · ')
+}
+
+const refreshAdbDevices = async (): Promise<void> => {
+  if (!window.electron?.ipcRenderer) return
+  try {
+    const result = await window.electron.ipcRenderer.invoke('adb-list-devices')
+    adbDevices.value = result?.success ? result.devices : []
+  } catch {
+    adbDevices.value = []
+  }
+  const devices = adbDevices.value
+  if (!devices.some((device) => device.serial === selectedAdbSerial.value)) {
+    // 原选择已断开时，优先选可用设备
+    const preferred = devices.find((device) => device.state === 'device') ?? devices[0]
+    selectedAdbSerial.value = preferred?.serial ?? ''
+  }
+}
+
+const openConnectDialog = (): void => {
+  connectDialogVisible.value = true
+}
+
+const handleAdbConnected = async (serial: string): Promise<void> => {
+  connectDialogVisible.value = false
+  selectedAdbSerial.value = serial
+  await refreshAdbDevices()
+}
+
+const handleConnectAdbMissing = (): void => {
+  connectDialogVisible.value = false
+  openAdbDownload(false)
+}
+
 const isCapturingAdb = ref(false)
 
-const triggerAdbCapture = async () => {
+const triggerAdbCapture = async (): Promise<void> => {
   if (isCapturingAdb.value) return
   isCapturingAdb.value = true
 
   if (window.electron && window.electron.ipcRenderer) {
     try {
-      const result = await window.electron.ipcRenderer.invoke('capture-adb-screen')
+      // 截图前刷新设备列表，避免使用已断开的设备
+      await refreshAdbDevices()
+      const result = await window.electron.ipcRenderer.invoke(
+        'capture-adb-screen',
+        selectedAdbSerial.value || undefined
+      )
       if (result && result.success) {
         addNativeImages([
           {
@@ -285,12 +463,14 @@ const triggerAdbCapture = async () => {
             dataUrl: result.dataUrl
           }
         ])
+      } else if (result?.code === 'ADB_NOT_FOUND') {
+        openAdbDownload(true)
       } else {
         alert(t('app.failedAdb') + (result?.error || t('app.adbEnsure')))
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to capture adb screen:', err)
-      alert(t('app.operationFailed') + err.message)
+      alert(t('app.operationFailed') + (err as Error).message)
     }
   } else {
     alert(t('app.onlyClient'))
@@ -298,7 +478,153 @@ const triggerAdbCapture = async () => {
   isCapturingAdb.value = false
 }
 
-const handleFileOpen = (event: Event) => {
+type AdbDownloadProgress = Parameters<Parameters<Window['api']['onAdbDownloadProgress']>[0]>[0]
+type AdbSource = 'custom' | 'env' | 'path' | 'android-studio' | 'homebrew' | 'downloaded'
+
+interface AdbPathResult {
+  canceled?: boolean
+  success?: boolean
+  status?: AdbStatus
+  error?: string
+}
+
+interface AdbStatus {
+  location: { path: string; source: AdbSource } | null
+  version: string | null
+  customPath: string | null
+  customPathValid: boolean
+  downloadedPath: string | null
+}
+
+const ADB_LICENSE_URL = 'https://developer.android.com/studio/terms'
+const adbSourceLabelKeys: Record<AdbSource, string> = {
+  custom: 'app.adbSourceCustom',
+  env: 'app.adbSourceEnv',
+  path: 'app.adbSourcePath',
+  'android-studio': 'app.adbSourceAndroidStudio',
+  homebrew: 'app.adbSourceHomebrew',
+  downloaded: 'app.adbSourceDownloaded'
+}
+
+const adbStatus = ref<AdbStatus | null>(null)
+const adbStatusLoading = ref(false)
+const adbSettingsError = ref('')
+const adbDownloadVisible = ref(false)
+const adbDownloadForCapture = ref(false)
+const adbDownloading = ref(false)
+const adbDownloadProgress = ref<AdbDownloadProgress | null>(null)
+const adbDownloadError = ref('')
+let removeAdbProgressListener: (() => void) | undefined
+
+const refreshAdbStatus = async (refresh = false): Promise<void> => {
+  if (!window.electron?.ipcRenderer) return
+  adbStatusLoading.value = true
+  adbSettingsError.value = ''
+  try {
+    adbStatus.value = await window.electron.ipcRenderer.invoke('adb-get-status', refresh)
+  } catch (err) {
+    adbSettingsError.value = t('app.operationFailed') + (err as Error).message
+  } finally {
+    adbStatusLoading.value = false
+  }
+}
+
+const handleAdbPathResult = (result: AdbPathResult | null | undefined): void => {
+  if (!result || result.canceled) return
+  if (result.success) {
+    adbStatus.value = result.status ?? null
+    adbSettingsError.value = ''
+  } else {
+    adbSettingsError.value =
+      result.error === 'INVALID_PATH'
+        ? t('app.adbInvalidPath')
+        : result.error || t('app.unknownErr')
+  }
+}
+
+const chooseAdbPath = async (): Promise<void> => {
+  if (!window.electron?.ipcRenderer) return
+  try {
+    handleAdbPathResult(await window.electron.ipcRenderer.invoke('adb-choose-custom-path'))
+  } catch (err) {
+    adbSettingsError.value = t('app.operationFailed') + (err as Error).message
+  }
+}
+
+const clearAdbPath = async (): Promise<void> => {
+  if (!window.electron?.ipcRenderer) return
+  try {
+    handleAdbPathResult(await window.electron.ipcRenderer.invoke('adb-set-custom-path', null))
+  } catch (err) {
+    adbSettingsError.value = t('app.operationFailed') + (err as Error).message
+  }
+}
+
+const formatBytes = (bytes: number): string => {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
+}
+
+const adbDownloadPercent = computed(() => {
+  const progress = adbDownloadProgress.value
+  if (progress?.phase !== 'download' || !progress.total) return null
+  return Math.min(100, Math.round(((progress.received ?? 0) / progress.total) * 100))
+})
+
+const adbDownloadPhaseText = computed(() => {
+  const progress = adbDownloadProgress.value
+  if (!progress || progress.phase === 'manifest') return t('app.adbPhaseManifest')
+  if (progress.phase === 'verify') return t('app.adbPhaseVerify')
+  if (progress.phase === 'extract') return t('app.adbPhaseExtract')
+  const received = formatBytes(progress.received ?? 0)
+  return progress.total
+    ? t('app.adbPhaseDownload', { received, total: formatBytes(progress.total) })
+    : t('app.adbPhaseDownloadUnknown', { received })
+})
+
+const openAdbDownload = (forCapture: boolean): void => {
+  adbDownloadForCapture.value = forCapture
+  adbDownloadError.value = ''
+  adbDownloadProgress.value = null
+  adbDownloadVisible.value = true
+}
+
+const closeAdbDownload = (): void => {
+  if (adbDownloading.value) return
+  adbDownloadVisible.value = false
+  adbDownloadForCapture.value = false
+}
+
+const startAdbDownload = async (): Promise<void> => {
+  if (adbDownloading.value || !window.electron?.ipcRenderer) return
+  adbDownloading.value = true
+  adbDownloadError.value = ''
+  adbDownloadProgress.value = null
+  try {
+    const result = await window.electron.ipcRenderer.invoke('adb-download')
+    if (result?.success) {
+      adbDownloadVisible.value = false
+      if (settingsVisible.value) void refreshAdbStatus()
+      void refreshAdbDevices()
+      if (adbDownloadForCapture.value) {
+        adbDownloadForCapture.value = false
+        void triggerAdbCapture()
+      }
+    } else {
+      adbDownloadError.value = result?.error || t('app.unknownErr')
+    }
+  } catch (err) {
+    adbDownloadError.value = (err as Error).message
+  } finally {
+    adbDownloading.value = false
+  }
+}
+
+watch(settingsVisible, (visible) => {
+  if (visible) void refreshAdbStatus()
+})
+
+const handleFileOpen = (event: Event): void => {
   const target = event.target as HTMLInputElement
   if (target.files && target.files.length > 0) {
     addImages(target.files)
@@ -306,11 +632,11 @@ const handleFileOpen = (event: Event) => {
   }
 }
 
-const handleDragOver = (e: DragEvent) => {
+const handleDragOver = (e: DragEvent): void => {
   e.preventDefault()
 }
 
-const handleDrop = (e: DragEvent) => {
+const handleDrop = (e: DragEvent): void => {
   e.preventDefault()
   const files = e.dataTransfer?.files
   if (files && files.length > 0) {
@@ -318,7 +644,7 @@ const handleDrop = (e: DragEvent) => {
   }
 }
 
-const handlePaste = (e: ClipboardEvent) => {
+const handlePaste = (e: ClipboardEvent): void => {
   const items = e.clipboardData?.items
   if (!items) return
   const files: File[] = []
@@ -335,7 +661,7 @@ const handlePaste = (e: ClipboardEvent) => {
   }
 }
 
-const handleMouseMove = (event: MouseEvent) => {
+const handleMouseMove = (event: MouseEvent): void => {
   const tab = activeTab.value
   if (!tab || !tab.ctx) return
 
@@ -395,14 +721,14 @@ const handleMouseMove = (event: MouseEvent) => {
   }
 }
 
-const handleMouseLeave = () => {
+const handleMouseLeave = (): void => {
   mouseX.value = null
   mouseY.value = null
   cursorX.value = null
   cursorY.value = null
 }
 
-const handleWindowFocus = async () => {
+const handleWindowFocus = async (): Promise<void> => {
   const tab = activeTab.value
   if (!tab || !tab.ctx || !imageRef.value) return
 
@@ -472,7 +798,7 @@ const renameTargetTabId = ref<string | null>(null)
 const renameInputName = ref('')
 const renameInputRef = ref<HTMLInputElement | null>(null)
 
-const handleTabContextMenu = (tab: ImageTab, event: MouseEvent) => {
+const handleTabContextMenu = (tab: ImageTab, event: MouseEvent): void => {
   event.preventDefault()
   contextMenuX.value = event.clientX
   contextMenuY.value = event.clientY
@@ -480,7 +806,7 @@ const handleTabContextMenu = (tab: ImageTab, event: MouseEvent) => {
   contextMenuVisible.value = true
 
   // Listen for clicks to dismiss context menu
-  const closeMenu = () => {
+  const closeMenu = (): void => {
     contextMenuVisible.value = false
     window.removeEventListener('click', closeMenu)
   }
@@ -489,14 +815,14 @@ const handleTabContextMenu = (tab: ImageTab, event: MouseEvent) => {
   }, 0)
 }
 
-const closeCurrentTab = () => {
+const closeCurrentTab = (): void => {
   if (contextMenuTabId.value) {
     closeTab(contextMenuTabId.value)
   }
   contextMenuVisible.value = false
 }
 
-const closeOtherTabs = () => {
+const closeOtherTabs = (): void => {
   if (contextMenuTabId.value) {
     const keepId = contextMenuTabId.value
     // Revoke URL for other tabs
@@ -511,7 +837,7 @@ const closeOtherTabs = () => {
   contextMenuVisible.value = false
 }
 
-const closeAllTabs = () => {
+const closeAllTabs = (): void => {
   tabs.value.forEach((tab) => {
     URL.revokeObjectURL(tab.url)
   })
@@ -520,7 +846,7 @@ const closeAllTabs = () => {
   contextMenuVisible.value = false
 }
 
-const copyImage = async () => {
+const copyImage = async (): Promise<void> => {
   if (!contextMenuTabId.value) return
   const tab = tabs.value.find((t) => t.id === contextMenuTabId.value)
   if (!tab || !tab.canvas) return
@@ -534,7 +860,7 @@ const copyImage = async () => {
   contextMenuVisible.value = false
 }
 
-const openRenameModal = () => {
+const openRenameModal = (): void => {
   if (!contextMenuTabId.value) return
   const tab = tabs.value.find((t) => t.id === contextMenuTabId.value)
   if (tab) {
@@ -545,13 +871,13 @@ const openRenameModal = () => {
   contextMenuVisible.value = false
 }
 
-const closeRenameModal = () => {
+const closeRenameModal = (): void => {
   renameModalVisible.value = false
   renameTargetTabId.value = null
   renameInputName.value = ''
 }
 
-const confirmRename = async () => {
+const confirmRename = async (): Promise<void> => {
   if (!renameTargetTabId.value || !renameInputName.value.trim()) return
   const tab = tabs.value.find((t) => t.id === renameTargetTabId.value)
   if (!tab) return
@@ -575,9 +901,9 @@ const confirmRename = async () => {
         } else {
           alert(t('app.failedRename') + (result?.error || t('app.unknownErr')))
         }
-      } catch (err: any) {
+      } catch (err) {
         console.error('Failed to rename file:', err)
-        alert(t('app.operationFailed') + err.message)
+        alert(t('app.operationFailed') + (err as Error).message)
       }
     } else {
       // Fallback
@@ -610,9 +936,9 @@ const confirmRename = async () => {
             }
           }
         }
-      } catch (err: any) {
+      } catch (err) {
         console.error('Error during rename/save dialog:', err)
-        alert(t('app.operationFailed') + err.message)
+        alert(t('app.operationFailed') + (err as Error).message)
       }
     }
     closeRenameModal()
@@ -628,7 +954,7 @@ watch(renameModalVisible, (visible) => {
   }
 })
 
-const closeTab = (id: string, event?: Event) => {
+const closeTab = (id: string, event?: Event): void => {
   if (event) {
     event.stopPropagation()
   }
@@ -648,11 +974,11 @@ const closeTab = (id: string, event?: Event) => {
   }
 }
 
-const toggleColorFormat = () => {
+const toggleColorFormat = (): void => {
   colorFormat.value = colorFormat.value === 'hex' ? 'rgb' : 'hex'
 }
 
-const handleImageClick = (event: MouseEvent) => {
+const handleImageClick = (event: MouseEvent): void => {
   const tab = activeTab.value
   if (!tab || !tab.ctx) return
 
@@ -684,7 +1010,7 @@ const handleImageClick = (event: MouseEvent) => {
   }
 }
 
-const handleKeyDown = (e: KeyboardEvent) => {
+const handleKeyDown = (e: KeyboardEvent): void => {
   if (
     document.activeElement?.tagName === 'INPUT' ||
     document.activeElement?.tagName === 'TEXTAREA'
@@ -805,13 +1131,20 @@ onMounted(() => {
   removeSettingsListener = window.api?.onOpenSettings(() => {
     settingsVisible.value = true
   })
+  removeAdbProgressListener = window.api?.onAdbDownloadProgress((progress) => {
+    adbDownloadProgress.value = progress
+  })
   removeMenuActionListener = window.api?.onMenuAction((action) => {
     if (action === 'open-image') void triggerFilePicker()
     if (action === 'capture-adb') void triggerAdbCapture()
+    if (action === 'connect-adb') openConnectDialog()
   })
   window.addEventListener('paste', handlePaste)
   window.addEventListener('keydown', handleKeyDown)
   window.addEventListener('focus', handleWindowFocus)
+  window.addEventListener('focus', refreshAdbDevices)
+  window.addEventListener('resize', handleWindowResize)
+  void refreshAdbDevices()
   nextTick(() => {
     handleWindowFocus()
   })
@@ -820,41 +1153,64 @@ onMounted(() => {
 onBeforeUnmount(() => {
   removeSettingsListener?.()
   removeMenuActionListener?.()
+  removeAdbProgressListener?.()
   window.removeEventListener('paste', handlePaste)
   window.removeEventListener('keydown', handleKeyDown)
   window.removeEventListener('focus', handleWindowFocus)
+  window.removeEventListener('focus', refreshAdbDevices)
+  window.removeEventListener('resize', handleWindowResize)
 })
 </script>
 
 <template>
-  <div class="app-layout" @dragover="handleDragOver" @drop="handleDrop">
+  <div
+    class="app-layout"
+    :class="{ 'is-resizing': isResizingSidebar }"
+    @dragover="handleDragOver"
+    @drop="handleDrop"
+  >
     <!-- Top Toolbar -->
     <header class="top-toolbar">
-      <div class="toolbar-left">
-        <button class="menu-btn" @click="triggerFilePicker">
-          <svg
-            viewBox="0 0 24 24"
-            width="14"
-            height="14"
-            stroke="currentColor"
-            stroke-width="2.5"
-            fill="none"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            class="btn-icon"
-          >
-            <path
-              d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
-            ></path>
-          </svg>
-          {{ t('app.openImage') }}
-        </button>
-        <button
-          class="menu-btn"
-          @click="triggerAdbCapture"
-          :disabled="isCapturingAdb"
-          style="margin-left: 8px"
+      <button class="menu-btn" @click="triggerFilePicker">
+        <svg
+          viewBox="0 0 24 24"
+          width="14"
+          height="14"
+          stroke="currentColor"
+          stroke-width="2.5"
+          fill="none"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="btn-icon"
         >
+          <path
+            d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+          ></path>
+        </svg>
+        {{ t('app.openImage') }}
+      </button>
+      <div class="toolbar-spacer"></div>
+      <div class="toolbar-device-group">
+        <div class="device-picker">
+          <span class="device-status-dot" :class="selectedAdbDeviceStatus"></span>
+          <select
+            v-model="selectedAdbSerial"
+            class="device-select"
+            :title="t('app.deviceSelect')"
+            :aria-label="t('app.deviceSelect')"
+            :disabled="adbDevices.length === 0"
+            @focus="refreshAdbDevices"
+          >
+            <option v-if="adbDevices.length === 0" value="">{{ t('app.deviceNone') }}</option>
+            <option v-for="device in adbDevices" :key="device.serial" :value="device.serial">
+              {{ adbDeviceLabel(device) }}
+            </option>
+          </select>
+        </div>
+        <button class="menu-btn" @click="openConnectDialog">
+          {{ t('app.connectPhone') }}
+        </button>
+        <button class="menu-btn primary" :disabled="isCapturingAdb" @click="triggerAdbCapture">
           <svg
             viewBox="0 0 24 24"
             width="14"
@@ -871,15 +1227,40 @@ onBeforeUnmount(() => {
           </svg>
           {{ isCapturingAdb ? t('app.capturing') : t('app.adbScreen') }}
         </button>
-        <input
-          type="file"
-          ref="fileInputRef"
-          multiple
-          accept="image/*"
-          class="hidden-file-input"
-          @change="handleFileOpen"
-        />
       </div>
+      <button
+        v-if="!isMac"
+        class="menu-btn toolbar-icon-btn"
+        :title="t('app.settings')"
+        :aria-label="t('app.settings')"
+        @click="settingsVisible = true"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="15"
+          height="15"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="btn-icon"
+          aria-hidden="true"
+        >
+          <circle cx="12" cy="12" r="3" />
+          <path
+            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+          />
+        </svg>
+      </button>
+      <input
+        ref="fileInputRef"
+        type="file"
+        multiple
+        accept="image/*"
+        class="hidden-file-input"
+        @change="handleFileOpen"
+      />
     </header>
 
     <!-- Main Container -->
@@ -887,7 +1268,7 @@ onBeforeUnmount(() => {
       <!-- Left workspace: Tab list + Viewport -->
       <div class="workspace-area">
         <!-- Tab List -->
-        <div class="tabs-bar" v-if="tabs.length > 0">
+        <div v-if="tabs.length > 0" class="tabs-bar">
           <div
             v-for="tab in tabs"
             :key="tab.id"
@@ -902,8 +1283,8 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Image Viewport Area -->
-        <main class="image-viewport" :class="{ 'is-empty': tabs.length === 0 }">
-          <div class="image-wrapper" v-if="activeTab">
+        <main ref="viewportRef" class="image-viewport" :class="{ 'is-empty': tabs.length === 0 }">
+          <div v-if="activeTab" class="image-wrapper">
             <div class="image-container-relative">
               <img
                 ref="imageRef"
@@ -918,12 +1299,15 @@ onBeforeUnmount(() => {
                 class="loupe-container"
                 :style="loupeStyle"
               >
-                <canvas ref="loupeCanvasRef" width="110" height="110"></canvas>
-                <div class="loupe-crosshair"></div>
+                <div class="loupe-frame">
+                  <canvas ref="loupeCanvasRef" width="110" height="110"></canvas>
+                  <div class="loupe-crosshair"></div>
+                </div>
+                <span class="loupe-tag">{{ mouseX }}, {{ mouseY }}</span>
               </div>
             </div>
           </div>
-          <div class="empty-state" v-else @click="triggerFilePicker">
+          <div v-else class="empty-state" @click="triggerFilePicker">
             <div class="upload-icon-wrapper">
               <svg
                 viewBox="0 0 24 24"
@@ -947,113 +1331,153 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- Right Sidebar (Inspector) -->
-      <aside class="sidebar right-sidebar">
-        <div class="sidebar-wrapper">
-          <div class="sidebar-section">
-            <div class="section-title">{{ t('app.picker') }}</div>
-            <div class="info-card picker-details">
-              <div class="info-item">
-                <span class="info-label">{{ t('app.coords') }}</span>
-                <span class="info-value coord-val">
-                  ({{ mouseX !== null ? mouseX : 0 }}, {{ mouseY !== null ? mouseY : 0 }})
+      <div
+        class="sidebar-resizer"
+        :class="{ active: isResizingSidebar }"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        :aria-valuenow="sidebarWidth"
+        :aria-valuemin="SIDEBAR_MIN_WIDTH"
+        :aria-valuemax="SIDEBAR_MAX_WIDTH"
+        :aria-label="t('app.resizeSidebar')"
+        :title="t('app.resizeSidebar')"
+        @pointerdown="startSidebarResize"
+        @keydown="handleSidebarResizerKey"
+        @dblclick="resetSidebarWidth"
+      ></div>
+      <aside class="sidebar" :style="{ width: `${sidebarWidth}px` }">
+        <section class="readout" :aria-label="t('app.picker')">
+          <div class="readout-top">
+            <div class="readout-swatch">
+              <span
+                v-if="mouseX !== null"
+                class="readout-swatch-fill"
+                :style="{ backgroundColor: mouseColorHex }"
+              ></span>
+            </div>
+            <div class="readout-side">
+              <div class="readout-coords" :class="{ idle: mouseX === null }">
+                <span class="readout-coord">
+                  <span class="readout-axis">X</span>{{ mouseX ?? '–' }}
+                </span>
+                <span class="readout-coord">
+                  <span class="readout-axis">Y</span>{{ mouseY ?? '–' }}
                 </span>
               </div>
-              <div
-                class="color-row-clickable"
-                @click="toggleColorFormat"
-                :title="
-                  mouseX !== null
-                    ? `${t('app.toggleFormat')} (${t('app.current')}: ${colorFormat === 'hex' ? 'RGBA' : 'HEXA'})`
-                    : t('app.toggleFormat')
-                "
-              >
-                <div
-                  class="color-preview"
-                  :style="{ backgroundColor: mouseX !== null ? mouseColorHex : '#00000000' }"
-                ></div>
-                <span class="color-value-text">
-                  {{
-                    mouseX !== null
-                      ? colorFormat === 'hex'
-                        ? mouseColorHex
-                        : mouseColorRgba
-                      : colorFormat === 'hex'
-                        ? '#00000000'
-                        : 'rgba(0, 0, 0, 0.000)'
-                  }}
-                </span>
+              <div class="readout-controls">
+                <button
+                  class="readout-format-btn"
+                  :title="t('app.toggleFormat')"
+                  :aria-label="`${t('app.toggleFormat')} (${t('app.current')}: ${colorFormat === 'hex' ? 'HEXA' : 'RGBA'})`"
+                  @click="toggleColorFormat"
+                >
+                  <svg
+                    viewBox="0 0 16 16"
+                    width="12"
+                    height="12"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.6"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M2 5h10l-2.5-2.5M14 11H4l2.5 2.5" />
+                  </svg>
+                  {{ colorFormat === 'hex' ? 'HEXA' : 'RGBA' }}
+                </button>
+                <div class="readout-help">
+                  <button
+                    class="readout-help-btn"
+                    type="button"
+                    :aria-label="t('app.pickerHelp')"
+                    :aria-expanded="pickerHintOpen"
+                    aria-describedby="readout-hint"
+                    @click="pickerHintOpen = !pickerHintOpen"
+                    @blur="pickerHintOpen = false"
+                  >
+                    ?
+                  </button>
+                  <p
+                    id="readout-hint"
+                    class="readout-hint"
+                    :class="{ open: pickerHintOpen }"
+                    role="tooltip"
+                  >
+                    {{ t('app.pickerHint') }}
+                  </p>
+                </div>
               </div>
             </div>
           </div>
+          <div class="readout-value" :class="{ idle: mouseX === null }">
+            {{ mouseX === null ? '–' : colorFormat === 'hex' ? mouseColorHex : mouseColorRgba }}
+          </div>
+        </section>
 
-          <!-- Color Records Log List -->
-          <div class="sidebar-section records-section">
-            <div class="section-header">
-              <span class="section-title">{{ t('app.recordsList') }} ({{ filledCount }}/10)</span>
-              <button class="clear-all-btn" @click="clearAllRecords" v-if="filledCount > 0">
-                {{ t('app.clearAll') }}
-              </button>
-            </div>
-            <div class="records-list">
-              <div
-                v-for="record in records"
-                :key="record.index"
-                class="record-item"
-                :class="{ 'has-data': record.x !== null }"
-              >
-                <span class="record-index">{{ record.index }}</span>
-                <div class="record-content" v-if="record.x !== null">
-                  <div class="record-coords">X:{{ record.x }} Y:{{ record.y }}</div>
-                  <div class="record-color-row">
-                    <div
-                      class="record-color-preview"
-                      :style="{ backgroundColor: record.hex || undefined }"
-                    ></div>
-                    <span
-                      class="record-color-text"
-                      :title="(colorFormat === 'hex' ? record.hex : record.rgba) || undefined"
-                    >
-                      {{ colorFormat === 'hex' ? record.hex : record.rgba }}
-                    </span>
-                  </div>
-                </div>
-                <div class="record-content empty" v-else>
-                  <div class="record-coords">X:0 Y:0</div>
-                  <div class="record-color-row">
-                    <div class="record-color-preview empty"></div>
-                    <span class="record-color-text">#00000000</span>
-                  </div>
-                </div>
+        <!-- Color Records Log List -->
+        <section class="records-section">
+          <div class="records-head">
+            <h2 class="records-title">
+              {{ t('app.recordsList') }}
+              <span class="records-count">{{ filledCount }} / 10</span>
+            </h2>
+            <button v-if="filledCount > 0" class="clear-all-btn" @click="clearAllRecords">
+              {{ t('app.clearAll') }}
+            </button>
+          </div>
+          <ol class="records-list">
+            <li
+              v-for="record in records"
+              :key="record.index"
+              class="record-item"
+              :class="{ 'has-data': record.x !== null }"
+            >
+              <span class="record-index">{{ record.index }}</span>
+              <span class="record-swatch">
+                <span
+                  v-if="record.x !== null"
+                  class="record-swatch-fill"
+                  :style="{ backgroundColor: record.hex || undefined }"
+                ></span>
+              </span>
+              <template v-if="record.x !== null">
+                <span class="record-text">
+                  <span class="record-coords">{{ record.x }}, {{ record.y }}</span>
+                  <span
+                    class="record-value"
+                    :title="(colorFormat === 'hex' ? record.hex : record.rgba) || undefined"
+                  >
+                    {{ colorFormat === 'hex' ? record.hex : record.rgba }}
+                  </span>
+                </span>
                 <button
                   class="record-clear-btn"
-                  @click="clearSlot(record.index)"
-                  v-if="record.x !== null"
                   :title="t('app.clearRecord')"
+                  :aria-label="t('app.clearRecord')"
+                  @click="clearSlot(record.index)"
                 >
                   ×
                 </button>
-              </div>
-            </div>
-          </div>
-        </div>
+              </template>
+              <span v-else class="record-placeholder">–</span>
+            </li>
+          </ol>
+        </section>
       </aside>
     </div>
 
     <!-- Bottom Status Bar -->
     <footer class="bottom-bar">
-      <div class="bottom-left filename-container">
-        <span class="status-text filename-display-left" :title="activeTab?.name || ''">
+      <div class="bottom-left">
+        <span class="filename-display-left" :title="activeTab?.name || ''">
           {{ activeTab ? activeTab.name : '' }}
         </span>
       </div>
-      <div class="bottom-right">
-        <span class="status-text resolution-display" v-if="activeTab">
-          {{ activeTab.width }}×{{ activeTab.height }} px
-        </span>
-        <span class="status-divider" v-if="activeTab">|</span>
-        <span class="status-text filesize-display">
-          {{ activeTab ? formatSize(activeTab.size) : '0 Bytes' }}
-        </span>
+      <div v-if="activeTab" class="bottom-right">
+        <span>{{ activeTab.width }} × {{ activeTab.height }} px</span>
+        <span>{{ formatSize(activeTab.size) }}</span>
       </div>
     </footer>
 
@@ -1104,9 +1528,128 @@ onBeforeUnmount(() => {
           </select>
           <p class="settings-help">{{ t('app.languageDescription') }}</p>
         </div>
+        <div class="settings-field">
+          <span class="settings-label">{{ t('app.adbTitle') }}</span>
+          <div class="adb-status">
+            <span class="adb-status-label">{{ t('app.adbCurrent') }}</span>
+            <template v-if="adbStatusLoading">{{ t('app.adbDetecting') }}</template>
+            <template v-else-if="adbStatus?.location">
+              <span class="adb-status-meta">
+                {{ t(adbSourceLabelKeys[adbStatus.location.source]) }}
+                <template v-if="adbStatus.version"> · {{ adbStatus.version }}</template>
+              </span>
+              <code class="adb-status-path" :title="adbStatus.location.path">
+                {{ adbStatus.location.path }}
+              </code>
+            </template>
+            <span v-else class="adb-status-missing">{{ t('app.adbNotFound') }}</span>
+          </div>
+          <label class="adb-sublabel" for="adb-custom-path">{{ t('app.adbCustomPath') }}</label>
+          <div class="adb-path-row">
+            <input
+              id="adb-custom-path"
+              class="rename-modal-input"
+              type="text"
+              readonly
+              :value="adbStatus?.customPath ?? ''"
+              :title="adbStatus?.customPath ?? ''"
+              :placeholder="t('app.adbCustomPlaceholder')"
+            />
+            <button class="rename-modal-btn cancel" @click="chooseAdbPath">
+              {{ t('app.adbChoose') }}
+            </button>
+            <button
+              v-if="adbStatus?.customPath"
+              class="rename-modal-btn cancel"
+              @click="clearAdbPath"
+            >
+              {{ t('app.adbClear') }}
+            </button>
+          </div>
+          <p v-if="adbStatus?.customPath && !adbStatus.customPathValid" class="settings-error">
+            {{ t('app.adbCustomInvalid') }}
+          </p>
+          <p v-if="adbSettingsError" class="settings-error">{{ adbSettingsError }}</p>
+          <div class="adb-actions">
+            <button
+              class="rename-modal-btn cancel"
+              :disabled="adbStatusLoading"
+              @click="refreshAdbStatus(true)"
+            >
+              {{ t('app.adbRedetect') }}
+            </button>
+            <button class="rename-modal-btn cancel" @click="openAdbDownload(false)">
+              {{ adbStatus?.downloadedPath ? t('app.adbRedownload') : t('app.adbDownloadAction') }}
+            </button>
+          </div>
+          <p class="settings-help">{{ t('app.adbSearchOrder') }}</p>
+        </div>
         <div class="rename-modal-footer">
           <button class="rename-modal-btn cancel" @click="settingsVisible = false">
             {{ t('app.close') }}
+          </button>
+        </div>
+      </section>
+    </div>
+
+    <!-- ADB Connect Dialog -->
+    <AdbConnectDialog
+      v-if="connectDialogVisible"
+      @close="connectDialogVisible = false"
+      @connected="handleAdbConnected"
+      @adb-missing="handleConnectAdbMissing"
+    />
+
+    <!-- ADB Download Modal -->
+    <div v-if="adbDownloadVisible" class="rename-modal-overlay" @click.self="closeAdbDownload">
+      <section
+        class="rename-modal"
+        role="dialog"
+        aria-modal="true"
+        :aria-label="t('app.adbDownloadTitle')"
+      >
+        <div class="rename-modal-header">
+          <h3 class="rename-modal-title">{{ t('app.adbDownloadTitle') }}</h3>
+          <p class="rename-modal-subtitle">
+            <template v-if="adbDownloadForCapture">{{ t('app.adbDownloadNotFound') }}</template>
+            {{ t('app.adbDownloadSub') }}
+          </p>
+          <p class="rename-modal-subtitle">
+            {{ t('app.adbLicense') }}
+            <a :href="ADB_LICENSE_URL" target="_blank" rel="noreferrer">
+              {{ t('app.adbLicenseLink') }}
+            </a>
+          </p>
+        </div>
+        <div v-if="adbDownloading" class="adb-download-progress">
+          <p class="settings-help">{{ adbDownloadPhaseText }}</p>
+          <div class="adb-progress-track">
+            <div
+              class="adb-progress-bar"
+              :class="{ indeterminate: adbDownloadPercent === null }"
+              :style="adbDownloadPercent === null ? undefined : { width: adbDownloadPercent + '%' }"
+            ></div>
+          </div>
+        </div>
+        <p v-if="adbDownloadError" class="settings-error">
+          {{ t('app.adbDownloadFailed') + adbDownloadError }}
+          <br />
+          {{ t('app.adbDownloadManual') }}
+        </p>
+        <div class="rename-modal-footer">
+          <button
+            class="rename-modal-btn cancel"
+            :disabled="adbDownloading"
+            @click="closeAdbDownload"
+          >
+            {{ t('app.cancel') }}
+          </button>
+          <button
+            class="rename-modal-btn confirm"
+            :disabled="adbDownloading"
+            @click="startAdbDownload"
+          >
+            {{ adbDownloadError ? t('app.adbRetry') : t('app.adbDownload') }}
           </button>
         </div>
       </section>
@@ -1121,13 +1664,13 @@ onBeforeUnmount(() => {
         </div>
         <div class="rename-modal-body">
           <input
+            ref="renameInputRef"
             v-model="renameInputName"
             type="text"
             class="rename-modal-input"
             :placeholder="t('app.inputNewName')"
             @keydown.enter="confirmRename"
             @keydown.esc="closeRenameModal"
-            ref="renameInputRef"
           />
         </div>
         <div class="rename-modal-footer">
@@ -1146,32 +1689,51 @@ onBeforeUnmount(() => {
 <style scoped>
 .loupe-container {
   position: absolute;
+  z-index: 100;
+  width: 110px;
+  pointer-events: none;
+}
+
+.loupe-frame {
+  position: relative;
   width: 110px;
   height: 110px;
-  border-radius: 50%;
-  border: 2px solid #fff;
-  box-shadow: 0 0 8px rgba(0, 0, 0, 0.5);
-  pointer-events: none;
   overflow: hidden;
-  background-color: #333;
-  z-index: 100;
-  image-rendering: pixelated;
+  border-radius: 4px;
+  background: #2a2a2a;
+  box-shadow:
+    0 0 0 1px #000,
+    0 6px 18px rgba(0, 0, 0, 0.45);
 }
-.loupe-container canvas {
+
+.loupe-frame canvas {
+  display: block;
   width: 100%;
   height: 100%;
-  display: block;
+  image-rendering: pixelated;
 }
+
+/* 中心像素框：白黑双层描边，在任何颜色上都看得清 */
 .loupe-crosshair {
   position: absolute;
-  top: 50%;
-  left: 50%;
+  top: 50px;
+  left: 50px;
   width: 10px;
   height: 10px;
-  margin-top: -5px;
-  margin-left: -5px;
-  border: 1px solid rgba(255, 0, 0, 0.8);
-  pointer-events: none;
-  box-sizing: border-box;
+  box-shadow:
+    0 0 0 1px #ffffff,
+    0 0 0 2px #000000;
+}
+
+.loupe-tag {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(24, 24, 24, 0.88);
+  color: #ededed;
+  font-family: var(--font-value);
+  font-size: 11px;
+  white-space: nowrap;
 }
 </style>

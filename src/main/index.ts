@@ -1,35 +1,51 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  ipcMain,
+  Menu,
+  screen,
+  dialog,
+  clipboard,
+  nativeImage,
+  type MenuItemConstructorOptions
+} from 'electron'
+import { basename, dirname, extname, join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { exec, execFile } from 'child_process'
-import { existsSync } from 'fs'
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync
+} from 'fs'
 import icon from '../../resources/icon.png?asset'
+import { findAdb, registerAdbIpcHandlers } from './adb'
+import { registerAdbWirelessIpcHandlers } from './adb-wireless'
+import { disposeCursorHelper, moveCursorWindows } from './cursor-win'
 
-/**
- * GUI applications launched outside a shell (for example from Finder) usually
- * receive a minimal PATH. Resolve adb explicitly so packaged builds can still
- * use an Android SDK installed for the current user.
- */
-function findAdbPath(): string | null {
-  const adbName = process.platform === 'win32' ? 'adb.exe' : 'adb'
-  const home = process.env.HOME || process.env.USERPROFILE || ''
-  const sdkRoots = [
-    process.env.ANDROID_SDK_ROOT,
-    process.env.ANDROID_HOME,
-    process.platform === 'darwin' ? join(home, 'Library', 'Android', 'sdk') : undefined,
-    process.platform === 'win32' && process.env.LOCALAPPDATA
-      ? join(process.env.LOCALAPPDATA, 'Android', 'Sdk')
-      : undefined,
-    process.platform === 'linux' ? join(home, 'Android', 'Sdk') : undefined
-  ].filter((value): value is string => Boolean(value))
+// 开发时写到项目根目录；打包后应用目录只读，改写到系统日志目录
+function debugLogPath(): string {
+  return is.dev ? join(app.getAppPath(), 'debug.log') : join(app.getPath('logs'), 'debug.log')
+}
 
-  const candidates = [
-    ...sdkRoots.map((sdkRoot) => join(sdkRoot, 'platform-tools', adbName)),
-    // Common package-manager locations are not present in Finder's PATH on macOS.
-    ...(process.platform === 'darwin' ? ['/opt/homebrew/bin/adb', '/usr/local/bin/adb'] : [])
-  ]
+// Windows 文件名不允许的字符、保留名称以及结尾的点或空格
+const INVALID_FILENAME_PATTERN = /[<>:"/\\|?*]/
+const WINDOWS_RESERVED_NAME_PATTERN = /^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i
 
-  return candidates.find(existsSync) || null
+function invalidFileNameReason(name: string): string | null {
+  if (!name.trim()) return '文件名不能为空'
+  const hasControlChar = [...name].some((char) => char.charCodeAt(0) < 32)
+  if (hasControlChar || INVALID_FILENAME_PATTERN.test(name))
+    return '文件名不能包含 < > : " / \\ | ? * 等字符'
+  if (process.platform === 'win32') {
+    if (WINDOWS_RESERVED_NAME_PATTERN.test(name)) return '文件名是 Windows 保留名称'
+    if (/[. ]$/.test(name)) return '文件名不能以点或空格结尾'
+  }
+  return null
 }
 
 function createWindow(): void {
@@ -37,6 +53,9 @@ function createWindow(): void {
   const mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
+    // 保证工具栏、截图区和侧栏都有可用空间
+    minWidth: 800,
+    minHeight: 540,
     show: false,
     autoHideMenuBar: true,
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -70,12 +89,10 @@ function createWindow(): void {
 app.whenReady().then(() => {
   app.setName('拾色')
 
-  const { Menu } = require('electron')
-
-  const setApplicationMenuLanguage = (locale: string) => {
+  const setApplicationMenuLanguage = (locale: string): void => {
     const isZh = locale.toLowerCase().startsWith('zh')
-    const template: any[] = [
-      ...(process.platform === 'darwin'
+    const appMenu: MenuItemConstructorOptions[] =
+      process.platform === 'darwin'
         ? [
             {
               label: app.name,
@@ -98,7 +115,9 @@ app.whenReady().then(() => {
               ]
             }
           ]
-        : []),
+        : []
+    const template: MenuItemConstructorOptions[] = [
+      ...appMenu,
       {
         label: isZh ? '文件' : 'File',
         submenu: [
@@ -113,6 +132,22 @@ app.whenReady().then(() => {
             click: () =>
               BrowserWindow.getFocusedWindow()?.webContents.send('menu-action', 'capture-adb')
           },
+          {
+            label: isZh ? '连接手机' : 'Connect Phone',
+            click: () =>
+              BrowserWindow.getFocusedWindow()?.webContents.send('menu-action', 'connect-adb')
+          },
+          // macOS 的设置在应用菜单中，其他平台放在文件菜单
+          ...(process.platform === 'darwin'
+            ? []
+            : [
+                { type: 'separator' as const },
+                {
+                  label: isZh ? '设置' : 'Settings',
+                  accelerator: 'CommandOrControl+,',
+                  click: () => BrowserWindow.getFocusedWindow()?.webContents.send('open-settings')
+                }
+              ]),
           { type: 'separator' },
           process.platform === 'darwin'
             ? { role: 'close', label: isZh ? '关闭窗口' : 'Close Window' }
@@ -154,7 +189,8 @@ app.whenReady().then(() => {
   })
 
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  // 与 electron-builder.yml 的 appId 保持一致，Windows 任务栏分组和通知依赖它
+  electronApp.setAppUserModelId('com.electron.app')
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
@@ -177,7 +213,7 @@ app.whenReady().then(() => {
 
   // IPC to move mouse cursor (receives viewport-relative coordinates and converts to screen-space)
   ipcMain.on('move-cursor', (event, clientX: number, clientY: number) => {
-    if (process.platform !== 'darwin') return
+    if (process.platform !== 'darwin' && process.platform !== 'win32') return
 
     const webContents = event.sender
     const win = BrowserWindow.fromWebContents(webContents)
@@ -189,13 +225,17 @@ app.whenReady().then(() => {
 
     // Write logs to debug.log for inspection
     try {
-      const { appendFileSync } = require('fs')
       appendFileSync(
-        join(app.getAppPath(), 'debug.log'),
+        debugLogPath(),
         `[Main] move-cursor: clientX=${clientX}, clientY=${clientY}, screenX=${screenX}, screenY=${screenY}, contentBounds=${JSON.stringify(contentBounds)}\n`
       )
     } catch (e) {
       console.error(e)
+    }
+
+    if (process.platform === 'win32') {
+      moveCursorWindows(screenX, screenY)
+      return
     }
 
     let binaryPath = join(process.resourcesPath, 'app.asar.unpacked', 'resources', 'move_cursor')
@@ -220,8 +260,7 @@ app.whenReady().then(() => {
   // IPC for general logging
   ipcMain.on('log-message', (_event, msg: string) => {
     try {
-      const { appendFileSync } = require('fs')
-      appendFileSync(join(app.getAppPath(), 'debug.log'), msg + '\n')
+      appendFileSync(debugLogPath(), msg + '\n')
     } catch (e) {
       console.error(e)
     }
@@ -229,7 +268,6 @@ app.whenReady().then(() => {
 
   // IPC to get cursor position relative to window content viewport
   ipcMain.handle('get-cursor-position', (event) => {
-    const { screen } = require('electron')
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return null
 
@@ -244,7 +282,6 @@ app.whenReady().then(() => {
 
   // IPC to show save dialog
   ipcMain.handle('show-save-dialog', async (event, defaultName: string) => {
-    const { dialog } = require('electron')
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return null
 
@@ -262,24 +299,21 @@ app.whenReady().then(() => {
   // IPC to write base64 image data to file path
   ipcMain.handle('save-image-file', async (_event, filePath: string, base64Data: string) => {
     try {
-      const { writeFileSync } = require('fs')
       const base64Clean = base64Data.replace(/^data:image\/\w+;base64,/, '')
       const buffer = Buffer.from(base64Clean, 'base64')
       writeFileSync(filePath, buffer)
 
       // Get file size
-      const { statSync } = require('fs')
       const stats = statSync(filePath)
       return { success: true, size: stats.size }
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to save image:', err)
-      return { success: false, error: err.message }
+      return { success: false, error: (err as Error).message }
     }
   })
 
   // IPC to copy image to clipboard
   ipcMain.on('copy-image-to-clipboard', (_event, base64Data: string) => {
-    const { clipboard, nativeImage } = require('electron')
     const base64Clean = base64Data.replace(/^data:image\/\w+;base64,/, '')
     const image = nativeImage.createFromBuffer(Buffer.from(base64Clean, 'base64'))
     clipboard.writeImage(image)
@@ -287,7 +321,6 @@ app.whenReady().then(() => {
 
   // IPC to show open dialog and return files base64 data & paths
   ipcMain.handle('show-open-dialog', async (event) => {
-    const { dialog } = require('electron')
     const win = BrowserWindow.fromWebContents(event.sender)
     if (!win) return null
 
@@ -300,13 +333,10 @@ app.whenReady().then(() => {
       return null
     }
 
-    const fs = require('fs')
-    const path = require('path')
-
     return result.filePaths.map((filePath) => {
-      const stats = fs.statSync(filePath)
-      const data = fs.readFileSync(filePath)
-      const ext = path.extname(filePath).toLowerCase()
+      const stats = statSync(filePath)
+      const data = readFileSync(filePath)
+      const ext = extname(filePath).toLowerCase()
       let mimeType = 'image/png'
       if (ext === '.jpg' || ext === '.jpeg') mimeType = 'image/jpeg'
       else if (ext === '.webp') mimeType = 'image/webp'
@@ -315,7 +345,7 @@ app.whenReady().then(() => {
 
       return {
         path: filePath,
-        name: path.basename(filePath),
+        name: basename(filePath),
         size: stats.size,
         dataUrl: `data:${mimeType};base64,${data.toString('base64')}`
       }
@@ -324,48 +354,56 @@ app.whenReady().then(() => {
 
   // IPC to rename file on disk in-place
   ipcMain.handle('rename-file-on-disk', async (_event, oldPath: string, newName: string) => {
-    const fs = require('fs')
-    const path = require('path')
     try {
-      const dir = path.dirname(oldPath)
-      const ext = path.extname(oldPath)
+      const dir = dirname(oldPath)
+      const ext = extname(oldPath)
 
       const finalName = newName.toLowerCase().endsWith(ext.toLowerCase()) ? newName : newName + ext
-      const newPath = path.join(dir, finalName)
+      const invalidReason = invalidFileNameReason(finalName)
+      if (invalidReason) return { success: false, error: invalidReason }
+      const newPath = join(dir, finalName)
 
-      if (!fs.existsSync(oldPath)) {
+      if (!existsSync(oldPath)) {
         return { success: false, error: '原文件不存在' }
       }
 
-      if (fs.existsSync(newPath) && oldPath.toLowerCase() !== newPath.toLowerCase()) {
+      if (existsSync(newPath) && oldPath.toLowerCase() !== newPath.toLowerCase()) {
         return { success: false, error: '目标文件名已存在' }
       }
 
-      fs.renameSync(oldPath, newPath)
+      renameSync(oldPath, newPath)
       return { success: true, newPath }
-    } catch (err: any) {
+    } catch (err) {
       console.error('Failed to rename file on disk:', err)
-      return { success: false, error: err.message }
+      return { success: false, error: (err as Error).message }
     }
   })
 
   // IPC to capture adb screen
-  ipcMain.handle('capture-adb-screen', async () => {
+  registerAdbIpcHandlers()
+  registerAdbWirelessIpcHandlers()
+
+  ipcMain.handle('capture-adb-screen', async (_event, serial?: string) => {
+    const adb = await findAdb()
+    if (!adb) {
+      return { success: false, code: 'ADB_NOT_FOUND', error: 'ADB not found' }
+    }
     return new Promise((resolve) => {
-      const adbPath = findAdbPath() || 'adb'
+      const adbPath = adb.path
       // execFile avoids shell quoting issues and preserves the raw PNG buffer.
       execFile(
         adbPath,
-        ['exec-out', 'screencap', '-p'],
+        // 多台设备时必须用 -s 指定，否则 adb 报 more than one device
+        [...(serial ? ['-s', serial] : []), 'exec-out', 'screencap', '-p'],
         { encoding: 'buffer', maxBuffer: 1024 * 1024 * 50 },
         (error, stdout, stderr) => {
           if (error) {
             const details = stderr?.toString().trim() || error.message
-            const hint =
-              error.code === 'ENOENT'
-                ? 'ADB not found. Please install Android SDK Platform-Tools or set ANDROID_SDK_ROOT.'
-                : details || 'Unknown error'
-            resolve({ success: false, error: hint })
+            if (error.code === 'ENOENT') {
+              resolve({ success: false, code: 'ADB_NOT_FOUND', error: `ADB not found: ${adbPath}` })
+              return
+            }
+            resolve({ success: false, error: details || 'Unknown error' })
             return
           }
           if (!stdout || stdout.length === 0) {
@@ -377,20 +415,18 @@ app.whenReady().then(() => {
           }
 
           try {
-            const fs = require('fs')
-            const path = require('path')
-            const os = require('os')
-            const saveDir = path.join(os.homedir(), 'Pictures', 'colorpicker')
-            if (!fs.existsSync(saveDir)) {
-              fs.mkdirSync(saveDir, { recursive: true })
+            // 使用系统图片目录，Windows 上可能被移到 OneDrive 等位置
+            const saveDir = join(app.getPath('pictures'), 'colorpicker')
+            if (!existsSync(saveDir)) {
+              mkdirSync(saveDir, { recursive: true })
             }
 
             const date = new Date()
-            const pad = (n: number) => n.toString().padStart(2, '0')
+            const pad = (n: number): string => n.toString().padStart(2, '0')
             const filename = `adb_screenshot_${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}.png`
-            const savePath = path.join(saveDir, filename)
+            const savePath = join(saveDir, filename)
 
-            fs.writeFileSync(savePath, stdout)
+            writeFileSync(savePath, stdout)
 
             resolve({
               success: true,
@@ -399,8 +435,11 @@ app.whenReady().then(() => {
               path: savePath,
               name: filename
             })
-          } catch (err: any) {
-            resolve({ success: false, error: 'Failed to save screenshot: ' + err.message })
+          } catch (err) {
+            resolve({
+              success: false,
+              error: 'Failed to save screenshot: ' + (err as Error).message
+            })
           }
         }
       )
@@ -422,6 +461,10 @@ app.whenReady().then(() => {
 // Quit when all windows are closed, except on macOS. There, it's common
 // for applications and their menu bar to stay active until the user quits
 // explicitly with Cmd + Q.
+app.on('will-quit', () => {
+  disposeCursorHelper()
+})
+
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()

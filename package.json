@@ -23,6 +23,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "qrcode": "^1.5.4",
     "vue-i18n": "^11.4.6"
   },
   "devDependencies": {
@@ -30,6 +31,7 @@
     "@electron-toolkit/eslint-config-ts": "^3.1.0",
     "@electron-toolkit/tsconfig": "^2.0.0",
     "@types/node": "^22.19.1",
+    "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.2",
     "electron": "^39.2.6",
     "electron-builder": "^26.0.12",
